@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.env
+.streamlit/secrets.toml
+health_data_*.csv
+.DS_Store
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+
+# 本地測試輸出
+*.log
+.coverage
+.pytest_cache/
+.mypy_cache/
+
+# OS
+Thumbs.db
+
+# 模式二 陪伴貝貝 — 執行期暫存（雲端為暫態，不入庫）
+saved_avatars/
+temp_reply.mp3
+live2d_component/frontend/assets/*.uploaded

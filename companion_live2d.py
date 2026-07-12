@@ -1,0 +1,560 @@
+# ============================================================
+#  companion_live2d.py — 模式二「陪伴貝貝」(Live2D AI 即時陪伴)
+#
+#  本檔由本地版 ui_pages.py 的 show_live2d_chat() 移植而來，並針對
+#  Streamlit Community Cloud 做了以下調整：
+#
+#  ① 只走「原生 Live2D」分支（前端 PIXI + Cubism，跑在瀏覽器 iframe）。
+#     本地版的「上傳自訂頭像 → THA3 神經網路算圖」分支需要 torch + 500MB
+#     權重 + CPU 逐幀推論，無法在雲端免費版運作，故在此移除/停用；該功能
+#     仍保留在你的本地 app。介面上保留入口，但會提示「本地端限定」。
+#  ② Gemini 金鑰改用 api_config.get_api_keys()（雲端 Secrets 優先），
+#     且缺金鑰時友善提示而非整頁崩潰。
+#  ③ 所有 Streamlit 呼叫改用 1.41.1 相容寫法（use_container_width，
+#     不使用新版的 width="stretch"），以免動搖既有雲端版的固定版本。
+#
+#  與第一部分（雲端版）的耦合點只有：core_data.go_to。
+#  健康數據「不」由本頁寫入；本頁是純陪伴互動模組。
+# ============================================================
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import base64
+import random
+import asyncio
+
+import streamlit as st
+
+from core_data import go_to
+from live2d_component import render_beibei
+from api_config import get_api_keys
+
+# edge-tts 的非同步在 Streamlit 腳本執行緒裡用 asyncio.run 即可；
+# 保險套用 nest_asyncio，避免某些情況「event loop already running」。
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except Exception:
+    pass
+
+
+# ==========================================
+# Gemini 聊天
+# ==========================================
+GEMINI_MODEL = "gemini-2.5-flash"   # 穩定 GA；勿用已下架的 gemini-2.0-flash
+MAX_RETRIES_PER_KEY = 3
+BASE_BACKOFF_SEC = 1.0
+
+
+def get_ai_response(user_data, is_audio: bool = False) -> str:
+    """呼叫 Gemini。金鑰缺失或套件未安裝時，回傳友善訊息而非丟例外。"""
+    api_keys = get_api_keys()
+    if not api_keys:
+        return ("（系統提示）還沒設定 Gemini 金鑰喔～請在 Streamlit Cloud 的 "
+                "Settings → Secrets 加入 GEMINI_API_KEY_1，貝貝才能開口聊天 (｡•́ω•ˋ｡)")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception:
+        return "（系統提示）找不到 google-genai 套件，請確認 requirements.txt 已安裝。"
+
+    system_prompt = (
+        "妳是『貝貝』，一個活潑且可愛的 AI 陪伴者，並且深度了解過世界上發生的任何事，甚至是網路流行梗你也很擅長。"
+        "如果是用繁體中文問問題必須用繁體中文回覆，除非使用者特別要求語言。"
+        "你要考慮對方說的話是不是玩梗或者是唱歌，如果是唱歌你可以接著唱下一句，如果是玩梗的話你可以吐槽或者是接下一句。"
+        "平常聊天請保持親切 約30字，但如果使用者要求推薦、解釋或詢問具體問題時，請務必給出『完整的具體答案』。"
+        "口語中如果你是要裝可愛可以適度加入日系語助詞（一段對話最多用一次）。"
+        "句子結尾可以加入顏文字，例如：『(´･-･●`)』、『(｡•́ω•ˋ｡)』、『ʕ´•×•`ʔ』。"
+    )
+
+    # 把最近的對話脈絡打包，賦予貝貝記憶
+    history_text = "【過去的對話脈絡】\n"
+    for msg in st.session_state.get("chat_history", [])[-6:]:
+        role_name = "貝貝" if msg["role"] == "assistant" else "主人"
+        clean = msg["content"].replace("🚨 【打瞌睡警報】\n\n", "").replace("🌸 【主動關懷】\n\n", "")
+        history_text += f"{role_name}：{clean}\n"
+    history_text += "【現在】\n"
+
+    try:
+        if is_audio:
+            audio_part = types.Part.from_bytes(data=user_data, mime_type="audio/wav")
+            contents = [system_prompt, history_text,
+                        "使用者傳送了一段語音，請結合上面的對話脈絡，直接聽這段語音並回覆：",
+                        audio_part]
+        else:
+            contents = f"{system_prompt}\n\n{history_text}\n使用者說：{user_data}"
+
+        last_error = ""
+        for i, current_key in enumerate(api_keys):
+            client = genai.Client(api_key=current_key)
+            for attempt in range(MAX_RETRIES_PER_KEY):
+                try:
+                    response = client.models.generate_content(model=GEMINI_MODEL, contents=contents)
+                    return response.text.replace("*", "")
+                except Exception as e:
+                    last_error = str(e)
+                    is_transient = any(code in last_error for code in [
+                        "503", "UNAVAILABLE", "overloaded", "500", "INTERNAL",
+                        "429", "RESOURCE_EXHAUSTED",
+                    ])
+                    if is_transient and attempt < MAX_RETRIES_PER_KEY - 1:
+                        time.sleep(BASE_BACKOFF_SEC * (2 ** attempt) + random.uniform(0, 0.4))
+                        continue
+                    break  # 換下一把鑰匙
+
+        if any(code in last_error for code in ["429", "RESOURCE_EXHAUSTED"]):
+            return "主人對不起…貝貝今天聊太多次，額度暫時用完了，我們等一下或明天再聊好不好呀？(´;ω;`)"
+        return "現在找貝貝聊天的人有點多，伺服器小塞車中…可以等幾秒再跟我說一次嗎？(｡•́ω•ˋ｡)"
+    except Exception as e:
+        print(f"系統發生未預期錯誤: {e}")
+        return "貝貝的腦袋剛剛短路了一下，可以再說一次嗎？"
+
+
+# ==========================================
+# Edge TTS 語音
+# ==========================================
+VOICE_PROFILES = {
+    "female": {"voice": "zh-CN-XiaoxiaoNeural", "rate": "+25%", "pitch": "+5Hz"},
+    "male":   {"voice": "zh-CN-YunxiNeural",    "rate": "+15%", "pitch": "+0Hz"},
+}
+
+
+async def generate_voice(text, gender=None):
+    """文字轉語音（base64 mp3）。套件缺失或失敗時回傳 None。"""
+    try:
+        import edge_tts
+    except Exception:
+        print("找不到 edge-tts 套件")
+        return None
+
+    text_for_speech = text.replace("～", "，").replace("~", "，").replace("*", "")
+    text_for_speech = re.sub(r"[\U00010000-\U0010ffff]", "", text_for_speech)  # 去 emoji
+
+    if gender is None:
+        try:
+            gender = st.session_state.get("beibei_voice_gender", "female")
+        except Exception:
+            gender = "female"
+    profile = VOICE_PROFILES.get(gender, VOICE_PROFILES["female"])
+
+    output_file = "temp_reply.mp3"
+    try:
+        communicate = edge_tts.Communicate(
+            text_for_speech, profile["voice"],
+            rate=profile["rate"], pitch=profile["pitch"],
+        )
+        await communicate.save(output_file)
+        with open(output_file, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        return audio_b64
+    except Exception as e:
+        print(f"聲音生成出錯: {e}")
+        return None
+
+
+def _speak(text) -> str | None:
+    """同步包一層 generate_voice。"""
+    try:
+        return asyncio.run(generate_voice(text))
+    except RuntimeError:
+        # 已有 running loop（少數情況）→ 用新 loop 跑
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(generate_voice(text))
+        finally:
+            loop.close()
+
+
+# ==========================================
+# 使用者偏好持久化（與本地版同款；雲端為暫存，重啟回預設）
+# ==========================================
+SAVED_DIR = "saved_avatars"
+AVATAR_POS_FILE = os.path.join(SAVED_DIR, "avatar_positions.json")
+DEFAULT_AVATAR_POS = {"scale": 1.0, "x": 0, "y": 0}
+LIVE2D_SETTINGS_FILE = os.path.join(SAVED_DIR, "live2d_settings.json")
+DEFAULT_LIVE2D_SETTINGS = {"idle_chat_enabled": True}
+
+
+def load_avatar_positions() -> dict:
+    try:
+        with open(AVATAR_POS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_avatar_positions(positions: dict) -> None:
+    os.makedirs(SAVED_DIR, exist_ok=True)
+    try:
+        with open(AVATAR_POS_FILE, "w", encoding="utf-8") as f:
+            json.dump(positions, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def load_live2d_settings() -> dict:
+    try:
+        with open(LIVE2D_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {**DEFAULT_LIVE2D_SETTINGS, **data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return dict(DEFAULT_LIVE2D_SETTINGS)
+
+
+def save_live2d_settings(settings: dict) -> None:
+    os.makedirs(SAVED_DIR, exist_ok=True)
+    try:
+        with open(LIVE2D_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+# ==========================================
+# 頁面：模式二 陪伴貝貝
+# ==========================================
+# ==========================================
+# 自訂頭像（THA3 預烤）— 雲端只「讀檔播放」，不跑神經網路
+# ==========================================
+BAKED_DIR = "baked_avatars"
+
+
+def list_baked_avatars() -> list[str]:
+    """列出 baked_avatars/ 下所有預烤好的頭像名稱（不含 .json）。"""
+    try:
+        return sorted(
+            os.path.splitext(f)[0]
+            for f in os.listdir(BAKED_DIR)
+            if f.lower().endswith(".json")
+        )
+    except (FileNotFoundError, OSError):
+        return []
+
+
+def load_baked_avatar(name: str) -> dict | None:
+    """讀入一個預烤頭像 JSON（由本地 bake_avatar.py 產生）。"""
+    path = os.path.join(BAKED_DIR, f"{name}.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "clips" in data:
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def classify_emotion(text: str) -> str:
+    """粗略判斷回覆情緒 → neutral / happy / sad / angry，用來選說話版動畫。"""
+    if not text:
+        return "neutral"
+    happy = ["開心", "高興", "太好", "哈哈", "嘿嘿", "讚", "好棒", "喜歡", "愛你", "好耶", "😄", "😊", "🥰", "😆", "✨", "💖"]
+    sad = ["難過", "傷心", "抱歉", "對不起", "唉", "失望", "可惜", "好累", "孤單", "嗚", "😢", "😭", "🥺"]
+    angry = ["生氣", "討厭", "哼", "可惡", "好煩", "不可以", "警告", "別這樣", "😠", "😡", "💢"]
+    score = {"happy": 0, "sad": 0, "angry": 0}
+    for w in happy:
+        if w in text:
+            score["happy"] += 1
+    for w in sad:
+        if w in text:
+            score["sad"] += 1
+    for w in angry:
+        if w in text:
+            score["angry"] += 1
+    best = max(score, key=score.get)
+    return best if score[best] > 0 else "neutral"
+
+
+def build_ai_webp(baked: dict, emotion: str = "neutral") -> str:
+    """把預烤資料組成前端 ai_webp 要的 JSON 字串（依情緒挑說話版）。
+    與本地 run_tha3_animation 的輸出格式完全一致。"""
+    clips = baked.get("clips", {})
+    talking_key = {"happy": "talk_happy", "sad": "talk_sad", "angry": "talk_angry"}.get(emotion, "talk_neutral")
+    return json.dumps({
+        "idle":    clips.get("idle", ""),
+        "talking": clips.get(talking_key, clips.get("talk_neutral", "")),
+        "yawn":    clips.get("yawn", ""),
+        "alert":   clips.get("alert", ""),
+        "grid":    baked.get("grid", []),
+        "gridDim": baked.get("gridDim", 7),
+    })
+
+
+def show_companion() -> None:
+    st.button("⬅️ 取消並返回功能大廳", on_click=go_to, args=("home",))
+    st.markdown(
+        "<h2 style='color:#FF8A80;'>🐼 模式二：陪伴貝貝 (Live2D AI 即時陪伴)</h2>",
+        unsafe_allow_html=True,
+    )
+
+    # ---- session 初始化 ----
+    st.session_state.setdefault("chat_history", [])
+    st.session_state.setdefault("latest_audio", None)
+    st.session_state.setdefault("last_processed_audio", None)
+    st.session_state.setdefault("last_click_id", None)
+    st.session_state.setdefault("beibei_voice_gender", "female")
+    st.session_state.setdefault("beibei_emotion", "neutral")
+
+    # ================= 側邊欄：外觀與聲音 =================
+    selected_baked = None   # 選到的預烤頭像名稱（None = 用原生 Live2D）
+    with st.sidebar.expander("✨ 角色外觀設定", expanded=True):
+        avatar_mode = st.radio(
+            "請選擇陪伴模式：",
+            ["🎀 原本的貝貝 (Live2D)", "🎨 我的自訂頭像 (THA3 預烤)"],
+            key="avatar_mode_radio_key",
+        )
+        if avatar_mode.startswith("🎨"):
+            baked_list = list_baked_avatars()
+            if not baked_list:
+                st.info(
+                    "還沒有預烤好的自訂頭像。\n\n"
+                    "請在**本地端**用 `python bake_avatar.py 你的照片.jpg 名稱` 烤好，"
+                    "把產生的 `baked_avatars/名稱.json` 一起上傳到雲端 repo，這裡就會出現可選。\n\n"
+                    "（雲端不跑神經網路，只播放你預烤好的成品。）"
+                )
+            else:
+                selected_baked = st.selectbox("選擇自訂頭像：", baked_list, key="baked_avatar_select")
+                st.caption(f"🎨 目前使用預烤頭像：**{selected_baked}**")
+
+        st.markdown("---")
+        st.markdown("##### 🔊 貝貝的聲音")
+        _voice_label = st.radio(
+            "選擇陪伴聲線：",
+            ["👧 女生 (曉曉)", "👦 男生 (雲希)"],
+            key="beibei_voice_label",
+            horizontal=True,
+        )
+        st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
+
+    # ================= 側邊欄：互動行為模式 =================
+    with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
+        companion_mode = st.radio(
+            "請選擇貝貝的行為模式：",
+            ["🎭 模式一：自主行動 (發呆)", "🪞 模式二：VR 臉部同步 (跟著你轉頭)"],
+            key="live2d_mode_radio",
+        )
+        mode_code = 1 if "模式一" in companion_mode else 2
+
+    # ================= 側邊欄：主動搭話（跨重啟記憶）=================
+    with st.sidebar.expander("💬 主動搭話設定", expanded=False):
+        if "idle_chat_enabled" not in st.session_state:
+            st.session_state.idle_chat_enabled = load_live2d_settings()["idle_chat_enabled"]
+        idle_chat_enabled = st.toggle(
+            "🌸 開啟「貝貝主動找你聊天」",
+            key="idle_chat_enabled",   # 不放 value=，避免每次 rerun 蓋掉讀回值
+            help="開啟後，若你超過 5 分鐘沒理貝貝，她會主動跳出來勾搭你～",
+        )
+        _saved = load_live2d_settings()
+        if _saved.get("idle_chat_enabled") != idle_chat_enabled:
+            _saved["idle_chat_enabled"] = idle_chat_enabled
+            save_live2d_settings(_saved)
+        st.caption("🟢 發呆太久貝貝會主動關心你！" if idle_chat_enabled else "⚪ 已靜音～貝貝會乖乖等你開口。")
+
+    # ================= 側邊欄：對話框外觀 =================
+    with st.sidebar.expander("💬 對話框外觀", expanded=False):
+        chat_user_emoji = st.selectbox(
+            "🧑 主人的頭像", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
+            key="chat_user_emoji",
+        )
+        st.markdown("---")
+        chat_custom_bg = st.toggle(
+            "🎨 啟用自訂對話框背景", value=False, key="chat_custom_bg",
+            help="關閉時維持預設外觀；開啟後才套用下面挑的顏色。",
+        )
+        chat_bg_color = st.color_picker("對話框底色", value="#FFF5F5", key="chat_bg_color")
+        chat_bubble_color = st.color_picker("訊息泡泡底色", value="#FFFFFF", key="chat_bubble_color")
+
+    # ================= 載入預烤頭像（若有選）=================
+    ai_b64_data = None
+    if selected_baked:
+        _baked = load_baked_avatar(selected_baked)
+        if _baked:
+            ai_b64_data = build_ai_webp(_baked, st.session_state.get("beibei_emotion", "neutral"))
+        else:
+            st.sidebar.error(f"⚠️ 讀取頭像「{selected_baked}」失敗，改用原生 Live2D。")
+
+    # ================= 側邊欄：位置與大小（per-avatar 記憶）=================
+    current_model_id = f"baked::{selected_baked}" if selected_baked else "__live2d__"
+    _all_positions = load_avatar_positions()
+    _pos = {**DEFAULT_AVATAR_POS, **_all_positions.get(current_model_id, {})}
+    _scale_key = f"pos_scale::{current_model_id}"
+    _x_key = f"pos_x::{current_model_id}"
+    _y_key = f"pos_y::{current_model_id}"
+
+    with st.sidebar.expander("📐 角色位置與大小調整", expanded=False):
+        _label = selected_baked if selected_baked else "原本的貝貝 (Live2D)"
+        st.caption(f"🎯 正在調整：**{_label}**")
+        model_scale = st.slider("🔍 大小縮放", 0.5, 3.0, value=float(_pos["scale"]), step=0.1, key=_scale_key)
+        model_x = st.slider("↔️ 左右平移", -500, 500, value=int(_pos["x"]), step=10, key=_x_key)
+        model_y = st.slider("↕️ 上下平移", -500, 500, value=int(_pos["y"]), step=10, key=_y_key)
+        _new_pos = {"scale": model_scale, "x": model_x, "y": model_y}
+        if _all_positions.get(current_model_id) != _new_pos:
+            _all_positions[current_model_id] = _new_pos
+            save_avatar_positions(_all_positions)
+        if st.button("↩️ 重設位置", key=f"pos_reset::{current_model_id}"):
+            _all_positions.pop(current_model_id, None)
+            save_avatar_positions(_all_positions)
+            for _k in (_scale_key, _x_key, _y_key):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
+    # ================= 主畫面：左 Live2D，右 聊天 =================
+    col_left, col_right = st.columns([1.5, 1])
+
+    with col_left:
+        assets_dir = os.path.join("live2d_component", "frontend", "assets")
+        os.makedirs(assets_dir, exist_ok=True)
+        valid_exts = [".jpg", ".jpeg", ".png"]
+
+        with st.expander("🖼️ 背景管理 (上傳與刪除)"):
+            up = st.file_uploader("上傳新背景 (JPG/PNG)", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+            custom_name = st.text_input("為背景取個名字 (選填)", placeholder="例如：我的房間")
+            if up is not None and st.button("確認上傳", type="primary"):
+                ext = os.path.splitext(up.name)[1]
+                fname = f"{custom_name.strip()}{ext}" if custom_name.strip() else up.name
+                fpath = os.path.join(assets_dir, fname)
+                if os.path.exists(fpath):
+                    st.error(f"⚠️ 已有叫「{fname}」的背景，請換個名字！")
+                else:
+                    with open(fpath, "wb") as f:
+                        f.write(up.getbuffer())
+                    st.success(f"✅ 成功上傳：{fname}")
+                    time.sleep(1)
+                    st.rerun()
+            st.caption("（雲端版背景檔為暫存，App 重啟後會回到預設；本地版則永久保存。）")
+
+        bg_files = [f for f in os.listdir(assets_dir)
+                    if os.path.isfile(os.path.join(assets_dir, f))
+                    and os.path.splitext(f)[1].lower() in valid_exts]
+        bg_choice = st.selectbox("切換背景：", ["純白背景"] + bg_files)
+        selected_bg = "" if bg_choice == "純白背景" else bg_choice
+
+        # 給 Live2D 元件容器加一個淡黑框
+        st.markdown(
+            """
+            <style>
+            [data-testid="stVerticalBlockBorderWrapper"]:has(iframe){
+                border:1px solid rgba(0,0,0,0.35) !important; border-radius:14px !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.container(border=True):
+            beibei_event = render_beibei(
+                audio_data=st.session_state.get("latest_audio", "") or "",
+                bg_image=selected_bg,
+                ai_webp=ai_b64_data,         # None=原生 Live2D；有值=播放預烤 THA3
+                companion_mode=mode_code,
+                model_scale=model_scale,
+                model_x=model_x,
+                model_y=model_y,
+            )
+
+        # ---- 事件處理：點擊 / 打瞌睡 / 主動搭話 ----
+        if beibei_event:
+            event_id = str(beibei_event)
+            if event_id != st.session_state.last_click_id:
+                st.session_state.last_click_id = event_id
+
+                if "clicked_" in event_id:
+                    with st.spinner("貝貝在想怎麼回你..."):
+                        prompt = ("（使用者用滑鼠『戳』了你。請扮演貼心的日系少女『貝貝』給出一句撒嬌或驚訝的反應。"
+                                  "請使用「戳」「摸」「碰」等正常動詞，嚴禁說出「排列」等電腦詞彙！"
+                                  "繁中回覆，25 字內，可加顏文字。）")
+                        reply = get_ai_response(prompt)
+                        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                        st.session_state.latest_audio = _speak(reply)
+                        st.rerun()
+
+                elif "drowsy_" in event_id:
+                    with st.spinner("⚠️ 發現你打瞌睡！貝貝正在找話題叫醒你..."):
+                        prompt = ("（系統偵測到使用者正在打瞌睡。請扮演貼心的少女『貝貝』，語氣自然流暢，"
+                                  "先叫醒使用者，接著立刻拋出一個有趣的話題或問題（例如今天天氣、最近過得好不好），"
+                                  "強迫他回話以保持清醒。繁中回覆，並以一個問句結尾！）")
+                        reply = get_ai_response(prompt)
+                        st.session_state.chat_history.append(
+                            {"role": "assistant", "content": f"🚨 【打瞌睡警報】\n\n{reply}"})
+                        st.session_state.latest_audio = _speak(reply)
+                        st.rerun()
+
+                elif "idle_" in event_id and st.session_state.get("idle_chat_enabled", True):
+                    with st.spinner("🌸 貝貝覺得有點寂寞，正在主動找你聊天..."):
+                        prompt = ("（你發現主人已經 5 分鐘沒理你了。請扮演活潑貼心的日系少女『貝貝』主動勾搭主人、"
+                                  "引導他說話，語氣帶點傲嬌或溫柔關心。繁中回覆，句尾必須是問句，35 字內，要加可愛顏文字。）")
+                        reply = get_ai_response(prompt)
+                        st.session_state.chat_history.append(
+                            {"role": "assistant", "content": f"🌸 【主動關懷】\n\n{reply}"})
+                        st.session_state.latest_audio = _speak(reply)
+                        st.rerun()
+
+    with col_right:
+        st.markdown("<br>" * 3, unsafe_allow_html=True)
+        st.subheader("💬 與貝貝聊天")
+
+        beibei_chat_avatar = "🐼"   # 雲端原生 Live2D：聊天頭像用熊貓
+        user_chat_avatar = st.session_state.get("chat_user_emoji", "🧑")
+
+        if st.session_state.get("chat_custom_bg", False):
+            _bg = st.session_state.get("chat_bg_color", "#FFF5F5")
+            _bubble = st.session_state.get("chat_bubble_color", "#FFFFFF")
+            st.markdown(
+                f"""
+                <style>
+                .st-key-beibei_chat_box {{
+                    background:{_bg} !important; border-radius:14px !important; padding:6px 10px !important;
+                }}
+                .st-key-beibei_chat_box [data-testid="stChatMessage"] {{
+                    background:{_bubble} !important; border-radius:12px !important;
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        chat_container = st.container(height=400, key="beibei_chat_box")
+        with chat_container:
+            for msg in st.session_state.chat_history:
+                _av = beibei_chat_avatar if msg["role"] == "assistant" else user_chat_avatar
+                with st.chat_message(msg["role"], avatar=_av):
+                    st.write(msg["content"])
+
+        col_text, col_mic = st.columns([4, 1])
+        with col_text:
+            user_input = st.chat_input("想對貝貝說什麼？")
+        with col_mic:
+            try:
+                from audio_recorder_streamlit import audio_recorder
+                audio_bytes = audio_recorder(text="", icon_size="2x", icon_name="microphone")
+            except Exception:
+                audio_bytes = None
+                st.caption("🎤×")
+
+        is_new_text = bool(user_input)
+        is_new_audio = (audio_bytes is not None) and (audio_bytes != st.session_state.last_processed_audio)
+
+        if is_new_text or is_new_audio:
+            with st.spinner("貝貝正在豎起耳朵聽..."):
+                if is_new_audio:
+                    st.session_state.last_processed_audio = audio_bytes
+                    user_display = "🎤 (語音訊息)"
+                    reply = get_ai_response(audio_bytes, is_audio=True)
+                else:
+                    user_display = user_input
+                    reply = get_ai_response(user_input, is_audio=False)
+
+                st.session_state.chat_history.append({"role": "user", "content": user_display})
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                st.session_state.beibei_emotion = classify_emotion(reply)
+                st.session_state.latest_audio = _speak(reply)
+                st.rerun()
