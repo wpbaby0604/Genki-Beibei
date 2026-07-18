@@ -32,6 +32,9 @@ from core_data import go_to
 from live2d_component import render_beibei
 from api_config import get_api_keys
 
+# 🆕 頭像儲存抽象層（repo 內建保底 + 之後接 Google Drive）
+import avatar_store
+
 # edge-tts 的非同步在 Streamlit 腳本執行緒裡用 asyncio.run 即可；
 # 保險套用 nest_asyncio，避免某些情況「event loop already running」。
 try:
@@ -225,31 +228,26 @@ def save_live2d_settings(settings: dict) -> None:
 # ==========================================
 # 自訂頭像（THA3 預烤）— 雲端只「讀檔播放」，不跑神經網路
 # ==========================================
-BAKED_DIR = "baked_avatars"
+BAKED_DIR = avatar_store.BAKED_DIR   # 保留舊名字，實際路徑由 avatar_store 決定
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_baked_avatars() -> list[str]:
-    """列出 baked_avatars/ 下所有預烤好的頭像名稱（不含 .json）。"""
-    try:
-        return sorted(
-            os.path.splitext(f)[0]
-            for f in os.listdir(BAKED_DIR)
-            if f.lower().endswith(".json")
-        )
-    except (FileNotFoundError, OSError):
-        return []
+    """列出所有可用頭像：repo 內建 3 個（保底，永遠可用）+ Google Drive 上使用者烤的。
+    ttl=60：新烤好的頭像最慢一分鐘內出現；烤製完成時我們也會主動呼叫 .clear()。"""
+    return avatar_store.list_avatars()
 
 
 def load_baked_avatar(name: str) -> dict | None:
-    """讀入一個預烤頭像 JSON（由本地 bake_avatar.py 產生）。"""
-    path = os.path.join(BAKED_DIR, f"{name}.json")
+    """讀入一個預烤頭像 JSON（bake_avatar.py / HF Space 產出，格式完全相同）。
+    刻意【不加快取】：它只會在 get_ai_webp() 快取未命中時被呼叫一次，
+    讓那個 15MB 的 dict 用完即散，不要常駐在 1GB 的容器裡。"""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(avatar_store.load_avatar(name))
         if isinstance(data, dict) and "clips" in data:
             return data
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+    except Exception as e:   # noqa: BLE001
+        print(f"[companion] 讀取頭像失敗 {name}: {e}")
     return None
 
 
@@ -287,6 +285,24 @@ def build_ai_webp(baked: dict, emotion: str = "neutral") -> str:
         "grid":    baked.get("grid", []),
         "gridDim": baked.get("gridDim", 7),
     })
+
+
+@st.cache_resource(max_entries=4, ttl=3600, show_spinner="🎨 正在載入頭像動畫…")
+def get_ai_webp(name: str, emotion: str) -> str:
+    """🆕 快取層。key = (頭像名稱, 情緒)，所以不需要把 15MB 的 dict 丟進 cache 簽名。
+
+    為什麼是 cache_resource 而不是 cache_data：
+      cache_data 在記憶體裡存的是 pickle 過的 bytes，每次命中都會 pickle.loads
+      還原成【新物件】—— 對 10.8MB 的字串就是每次 rerun 重配置 10.8MB。
+      cache_resource 直接回傳同一個物件的參照；字串是 immutable，共用完全安全，
+      而且跨 session 共享（多人同時看同一個頭像時只有一份）。
+
+    失敗時 raise 而不是 return None —— 讓 Streamlit 不要把「失敗」快取一小時。
+    """
+    baked = load_baked_avatar(name)
+    if not baked:
+        raise avatar_store.AvatarNotFound(name)
+    return build_ai_webp(baked, emotion)      # ← 產物格式一個位元都沒變
 
 
 def show_companion() -> None:
@@ -376,10 +392,12 @@ def show_companion() -> None:
     # ================= 載入預烤頭像（若有選）=================
     ai_b64_data = None
     if selected_baked:
-        _baked = load_baked_avatar(selected_baked)
-        if _baked:
-            ai_b64_data = build_ai_webp(_baked, st.session_state.get("beibei_emotion", "neutral"))
-        else:
+        try:
+            ai_b64_data = get_ai_webp(
+                selected_baked, st.session_state.get("beibei_emotion", "neutral")
+            )
+        except Exception as e:   # noqa: BLE001
+            print(f"[companion] get_ai_webp 失敗: {e}")
             st.sidebar.error(f"⚠️ 讀取頭像「{selected_baked}」失敗，改用原生 Live2D。")
 
     # ================= 側邊欄：位置與大小（per-avatar 記憶）=================

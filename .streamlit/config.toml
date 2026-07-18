@@ -1,0 +1,11 @@
+# ============================================================
+#  .streamlit/config.toml — Streamlit 執行參數
+#  ⚠️ 這個檔【要】commit 進 repo（跟 secrets.toml 不一樣，那個不能上傳）
+# ============================================================
+[server]
+# 預設是 200 MB！使用者拖一張 RAW 檔進來就會把 1GB 容器打爆。
+# 照片與背景圖 5 MB 綽綽有餘。
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
