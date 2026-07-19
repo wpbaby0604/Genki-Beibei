@@ -35,6 +35,9 @@ from api_config import get_api_keys
 # 🆕 頭像儲存抽象層（repo 內建保底 + 之後接 Google Drive）
 import avatar_store
 
+# 🆕 待烤照片佇列（路線 C：使用者上傳照片 → 本機 baker 收件烤製）
+from drive_queue import DriveQueue, DriveQueueError
+
 # edge-tts 的非同步在 Streamlit 腳本執行緒裡用 asyncio.run 即可；
 # 保險套用 nest_asyncio，避免某些情況「event loop already running」。
 try:
@@ -305,6 +308,119 @@ def get_ai_webp(name: str, emotion: str) -> str:
     return build_ai_webp(baked, emotion)      # ← 產物格式一個位元都沒變
 
 
+# ============================================================
+#  路線 C：上傳照片訂製角色（送進 Drive 待烤佇列）
+#  —— 以下皆為新增，未更動任何既有邏輯。
+# ============================================================
+@st.cache_resource
+def _get_drive_queue():
+    """建立 DriveQueue（用雲端 Secrets 的同一組 [gdrive] 憑證）。失敗回 None。"""
+    try:
+        return DriveQueue.from_secrets()
+    except Exception as e:  # noqa: BLE001
+        print(f"[companion] DriveQueue 初始化失敗: {e}")
+        return None
+
+
+def _make_job_code(nickname: str) -> str:
+    """暱稱清成合法檔名 + 補 6 碼隨機，當認領代碼／成品頭像名（符合 ^[\\w\\-]{1,64}$）。"""
+    base = re.sub(r"[^\w\-]", "", nickname)[:40] if nickname else ""
+    if not base:
+        base = "me"
+    suffix = "".join(random.choices("0123456789abcdef", k=6))
+    return f"{base}_{suffix}"
+
+
+def _render_job_status(queue, code: str) -> None:
+    """顯示某認領代碼目前狀態：已完成 / 排隊中。"""
+    ready = False
+    try:
+        ready = code in list_baked_avatars()
+    except Exception:  # noqa: BLE001
+        pass
+    if ready:
+        st.success(f"🎉 你的角色「{code}」已經烤好了！在上面「🎨 我的自訂頭像」下拉選它即可。")
+        return
+    pending = False
+    try:
+        pending = any(p["job_id"] == code for p in queue.list_pending())
+    except Exception:  # noqa: BLE001
+        pass
+    if pending:
+        st.info(f"⏳ 「{code}」排隊製作中，請稍後回來重整查看。")
+    else:
+        st.caption(f"（暫時查不到「{code}」的狀態，可能已完成並被清理，或代碼有誤。）")
+
+
+def _submit_photo(queue, photo, nickname) -> None:
+    """把上傳的照片送進待烤佇列。"""
+    try:
+        data = photo.getvalue()
+    except Exception:  # noqa: BLE001
+        data = photo.read()
+    if not data:
+        st.error("讀不到照片內容，請重新選擇。")
+        return
+    if len(data) > 5 * 1024 * 1024:
+        st.error("照片超過 5MB，請壓縮後再試。")
+        return
+    ext = (photo.name.rsplit(".", 1)[-1] if "." in photo.name else "png").lower()
+    code = _make_job_code(nickname)
+    try:
+        queue.upload_photo(code, data, ext=ext)
+    except DriveQueueError as e:
+        st.error(f"上傳失敗：{e}")
+        return
+    except Exception as e:  # noqa: BLE001
+        st.error(f"上傳時發生問題：{e}")
+        return
+    st.session_state.uploaded_job_code = code
+    st.success(
+        f"✅ 送出成功！你的認領代碼是 **{code}**\n\n"
+        "角色會在數小時內烤好，屆時回到「🎨 我的自訂頭像」下拉選這個代碼即可。"
+    )
+
+
+def render_photo_upload_ui() -> None:
+    """側邊欄：上傳自己的照片 → 送進待烤佇列，顯示認領代碼與狀態。"""
+    with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
+        st.caption(
+            "上傳一張正面清楚的照片，我們會用 THA3 幫你烤成會動的專屬角色。"
+            "⚠️ 動漫／插畫風效果最好；**真人自拍**可能略有落差。"
+        )
+
+        queue = _get_drive_queue()
+        if queue is None:
+            st.warning("目前無法連上雲端儲存，請稍後再試。")
+            return
+
+        last_code = st.session_state.get("uploaded_job_code")
+        if last_code:
+            _render_job_status(queue, last_code)
+            st.markdown("---")
+
+        photo = st.file_uploader(
+            "選擇照片（png / jpg / webp，上限 5MB）",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="companion_photo_uploader",
+        )
+        nickname = st.text_input(
+            "幫這個角色取個名字（可留白）",
+            key="companion_photo_nick",
+            max_chars=40,
+            placeholder="例如：mybeibei",
+        )
+        agree = st.checkbox(
+            "我了解照片會暫存於雲端供製作、完成後即刪除，且我有權使用這張照片。",
+            key="companion_photo_consent",
+        )
+
+        disabled = (photo is None) or (not agree)
+        if st.button("🚀 送出製作", key="companion_photo_submit",
+                     disabled=disabled, use_container_width=True):
+            _submit_photo(queue, photo, nickname)
+
+
 def show_companion() -> None:
     st.button("⬅️ 取消並返回功能大廳", on_click=go_to, args=("home",))
     st.markdown(
@@ -350,6 +466,9 @@ def show_companion() -> None:
             horizontal=True,
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
+
+    # ================= 側邊欄：上傳照片訂製角色（路線 C）=================
+    render_photo_upload_ui()
 
     # ================= 側邊欄：互動行為模式 =================
     with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
