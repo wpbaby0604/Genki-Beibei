@@ -28,3 +28,5 @@ Thumbs.db
 saved_avatars/
 temp_reply.mp3
 live2d_component/frontend/assets/*.uploaded
+
+get_refresh_token.py
