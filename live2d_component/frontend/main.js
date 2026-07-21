@@ -462,6 +462,10 @@ Streamlit.onRender(function(args) {
         
         // 🌟 2. 動態調整 Live2D 模型大小與位置
         if (beibeiModel) {
+            // 🔧 修正「原生模型往右飄」：重繪當下先把畫布尺寸同步到目前視窗，
+            //    避免讀到還沒更新的舊寬度，導致 x 沒對準中心而一次次累積偏移。
+            app.resize();
+
             // 讀取 Python 傳來的參數，如果沒傳就用預設值 1.0 和 0
             let scale = args.model_scale !== undefined ? args.model_scale : 1.0;
             let offsetX = args.model_x !== undefined ? args.model_x : 0;
