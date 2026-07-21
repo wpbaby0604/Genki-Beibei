@@ -130,6 +130,23 @@ VOICE_PROFILES = {
 }
 
 
+# 語音專用清字：只保留「可朗讀」的字元（中文／中文擴充A／英數／空白／基本標點），
+# 其餘一律清掉——顏文字 (´･ω･｀)、emoji、箭頭、幾何符號等都會被移除，不會被唸出來。
+# 注意：這只影響「要唸的版本」，聊天泡泡仍顯示完整內容。
+_SPEECH_KEEP = re.compile(
+    r"[^\u4e00-\u9fff\u3400-\u4dbfA-Za-z0-9\s，。！？、；：,.!?]"
+)
+
+
+def _clean_for_speech(text) -> str:
+    t = str(text)
+    t = t.replace("～", "，").replace("~", "，").replace("*", "")
+    t = re.sub(r"[\U00010000-\U0010ffff]", "", t)   # 去掉星平面 emoji
+    t = _SPEECH_KEEP.sub("", t)                       # 只留可朗讀字元（顏文字符號一併清掉）
+    t = re.sub(r"\s+", " ", t).strip()                # 收斂多餘空白
+    return t
+
+
 async def generate_voice(text, gender=None):
     """文字轉語音（base64 mp3）。套件缺失或失敗時回傳 None。"""
     try:
@@ -138,8 +155,9 @@ async def generate_voice(text, gender=None):
         print("找不到 edge-tts 套件")
         return None
 
-    text_for_speech = text.replace("～", "，").replace("~", "，").replace("*", "")
-    text_for_speech = re.sub(r"[\U00010000-\U0010ffff]", "", text_for_speech)  # 去 emoji
+    text_for_speech = _clean_for_speech(text)
+    if not text_for_speech:
+        return None   # 清完沒剩可唸的字（例如整句都是顏文字）→ 不發聲，避免 TTS 出錯
 
     if gender is None:
         try:
