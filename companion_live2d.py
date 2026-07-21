@@ -23,6 +23,7 @@ import re
 import json
 import time
 import base64
+import html
 import random
 import asyncio
 
@@ -190,6 +191,7 @@ DEFAULT_LIVE2D_SETTINGS = {
     "chat_custom_bg": False,
     "chat_bg_color": "#FFF5F5",
     "chat_bubble_color": "#FFFFFF",
+    "chat_user_avatar_path": "",
 }
 
 
@@ -504,13 +506,48 @@ def show_companion() -> None:
     with st.sidebar.expander("💬 對話框外觀", expanded=False):
         # 先把存檔讀回來，當作各設定的初始值（沒放 value=，才不會每次 rerun 蓋掉讀回值）
         _appear = load_live2d_settings()
-        for _ak in ("chat_user_emoji", "chat_custom_bg", "chat_bg_color", "chat_bubble_color"):
+        for _ak in ("chat_user_emoji", "chat_custom_bg", "chat_bg_color",
+                    "chat_bubble_color", "chat_user_avatar_path"):
             if _ak not in st.session_state:
                 st.session_state[_ak] = _appear.get(_ak, DEFAULT_LIVE2D_SETTINGS[_ak])
         chat_user_emoji = st.selectbox(
-            "🧑 主人的頭像", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
+            "🧑 主人的頭像（未上傳圖片時使用）", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
             key="chat_user_emoji",
         )
+
+        # ---- 上傳自己的聊天頭像（會縮成小圖存起來，跨重整記憶）----
+        _up_av = st.file_uploader(
+            "🖼️ 或上傳自己的頭像 (PNG/JPG)", type=["png", "jpg", "jpeg"],
+            key="chat_user_avatar_upload",
+        )
+        if _up_av is not None:
+            _sig = f"{_up_av.name}:{_up_av.size}"
+            if st.session_state.get("_chat_av_sig") != _sig:
+                try:
+                    from PIL import Image
+                    _img = Image.open(_up_av).convert("RGBA")
+                    _img.thumbnail((96, 96))          # 縮小，避免拖慢頁面
+                    os.makedirs(SAVED_DIR, exist_ok=True)
+                    _av_path = os.path.join(SAVED_DIR, "user_chat_avatar.png")
+                    _img.save(_av_path, "PNG")
+                    st.session_state["chat_user_avatar_path"] = _av_path
+                    st.session_state["_chat_av_sig"] = _sig
+                    _sv = load_live2d_settings()
+                    _sv["chat_user_avatar_path"] = _av_path
+                    save_live2d_settings(_sv)
+                    st.success("頭像已更新！")
+                except Exception as _e:
+                    st.error(f"頭像處理失敗：{_e}")
+        if st.session_state.get("chat_user_avatar_path"):
+            st.caption("目前使用上傳的頭像。")
+            if st.button("↩️ 改回用表情符號", key="clear_chat_avatar"):
+                st.session_state["chat_user_avatar_path"] = ""
+                st.session_state.pop("_chat_av_sig", None)
+                _sv = load_live2d_settings()
+                _sv["chat_user_avatar_path"] = ""
+                save_live2d_settings(_sv)
+                st.rerun()
+
         st.markdown("---")
         chat_custom_bg = st.toggle(
             "🎨 啟用自訂對話框背景", key="chat_custom_bg",
@@ -661,32 +698,56 @@ def show_companion() -> None:
         st.markdown("<br>" * 3, unsafe_allow_html=True)
         st.subheader("💬 與貝貝聊天")
 
-        beibei_chat_avatar = "🐼"   # 雲端原生 Live2D：聊天頭像用熊貓
-        user_chat_avatar = st.session_state.get("chat_user_emoji", "🧑")
+        beibei_chat_avatar = "🐼"   # 貝貝聊天頭像用熊貓
+        user_emoji = st.session_state.get("chat_user_emoji", "🧑")
 
+        # 貝貝頭像（左）
+        beibei_av_html = f'<span style="font-size:24px;line-height:1;">{beibei_chat_avatar}</span>'
+        # 使用者頭像（右）：優先用上傳的小圖，沒有就用表情符號
+        _user_av_path = st.session_state.get("chat_user_avatar_path", "")
+        user_av_html = f'<span style="font-size:24px;line-height:1;">{html.escape(user_emoji)}</span>'
+        if _user_av_path and os.path.exists(_user_av_path):
+            try:
+                _b64 = base64.b64encode(open(_user_av_path, "rb").read()).decode("ascii")
+                user_av_html = (
+                    f'<img src="data:image/png;base64,{_b64}" '
+                    'style="width:32px;height:32px;border-radius:50%;object-fit:cover;">'
+                )
+            except OSError:
+                pass
+
+        # 顏色：開了自訂就用使用者選的，否則用預設
         if st.session_state.get("chat_custom_bg", False):
             _bg = st.session_state.get("chat_bg_color", "#FFF5F5")
             _bubble = st.session_state.get("chat_bubble_color", "#FFFFFF")
-            st.markdown(
-                f"""
-                <style>
-                .st-key-beibei_chat_box {{
-                    background:{_bg} !important; border-radius:14px !important; padding:6px 10px !important;
-                }}
-                .st-key-beibei_chat_box [data-testid="stChatMessage"] {{
-                    background:{_bubble} !important; border-radius:12px !important;
-                }}
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
+        else:
+            _bg, _bubble = "transparent", "#FFFFFF"
+        st.markdown(
+            f"""<style>
+            .st-key-beibei_chat_box {{ background:{_bg} !important; border-radius:14px !important; padding:8px !important; }}
+            </style>""",
+            unsafe_allow_html=True,
+        )
 
         chat_container = st.container(height=400, key="beibei_chat_box")
         with chat_container:
             for msg in st.session_state.chat_history:
-                _av = beibei_chat_avatar if msg["role"] == "assistant" else user_chat_avatar
-                with st.chat_message(msg["role"], avatar=_av):
-                    st.write(msg["content"])
+                _is_user = msg["role"] != "assistant"
+                _content = html.escape(str(msg["content"])).replace("\n", "<br>")
+                _av = user_av_html if _is_user else beibei_av_html
+                _dir = "row-reverse" if _is_user else "row"
+                _justify = "flex-end" if _is_user else "flex-start"
+                st.markdown(
+                    f"""
+                    <div style="display:flex;justify-content:{_justify};margin:8px 0;">
+                      <div style="display:flex;flex-direction:{_dir};align-items:flex-start;gap:8px;max-width:82%;">
+                        <div style="flex:0 0 auto;">{_av}</div>
+                        <div style="background:{_bubble};color:#222;padding:8px 12px;border-radius:14px;overflow-wrap:anywhere;">{_content}</div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         col_text, col_mic = st.columns([4, 1])
         with col_text:
