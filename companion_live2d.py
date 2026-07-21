@@ -407,9 +407,9 @@ def _submit_photo(queue, photo, nickname) -> None:
     )
 
 
-def render_photo_upload_ui() -> None:
-    """側邊欄：上傳自己的照片 → 送進待烤佇列，顯示認領代碼與狀態。"""
-    with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
+def render_photo_upload_ui(embed: bool = False) -> None:
+    """側邊欄：上傳照片 → 送進待烤佇列。embed=True 時只渲染內容（供嵌進其他 expander，Streamlit 不允許 expander 巢狀）。"""
+    def _body():
         st.caption(
             "上傳一張正面清楚的照片，我們會用 THA3 幫你烤成會動的專屬角色。"
             "⚠️ 動漫／插畫風效果最好；**真人自拍**可能略有落差。"
@@ -445,6 +445,12 @@ def render_photo_upload_ui() -> None:
         if st.button("🚀 送出製作", key="companion_photo_submit",
                      disabled=disabled, use_container_width=True):
             _submit_photo(queue, photo, nickname)
+
+    if embed:
+        _body()
+    else:
+        with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
+            _body()
 
 
 def show_companion() -> None:
@@ -484,7 +490,11 @@ def show_companion() -> None:
                 st.caption(f"🎨 目前使用預烤頭像：**{selected_baked}**")
 
         st.markdown("---")
-        st.markdown("##### 🔊 貝貝的聲音")
+        st.markdown("##### 📷 上傳照片訂製角色")
+        render_photo_upload_ui(embed=True)
+
+    # ================= 側邊欄：貝貝的聲音（獨立一欄）=================
+    with st.sidebar.expander("🔊 貝貝的聲音", expanded=False):
         _voice_label = st.radio(
             "選擇陪伴聲線：",
             ["👧 女生 (曉曉)", "👦 男生 (雲希)"],
@@ -492,9 +502,6 @@ def show_companion() -> None:
             horizontal=True,
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
-
-    # ================= 側邊欄：上傳照片訂製角色（路線 C）=================
-    render_photo_upload_ui()
 
     # ================= 側邊欄：互動行為模式 =================
     with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
