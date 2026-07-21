@@ -184,7 +184,13 @@ SAVED_DIR = "saved_avatars"
 AVATAR_POS_FILE = os.path.join(SAVED_DIR, "avatar_positions.json")
 DEFAULT_AVATAR_POS = {"scale": 1.0, "x": 0, "y": 0}
 LIVE2D_SETTINGS_FILE = os.path.join(SAVED_DIR, "live2d_settings.json")
-DEFAULT_LIVE2D_SETTINGS = {"idle_chat_enabled": True}
+DEFAULT_LIVE2D_SETTINGS = {
+    "idle_chat_enabled": True,
+    "chat_user_emoji": "🧑",
+    "chat_custom_bg": False,
+    "chat_bg_color": "#FFF5F5",
+    "chat_bubble_color": "#FFFFFF",
+}
 
 
 def load_avatar_positions() -> dict:
@@ -494,19 +500,35 @@ def show_companion() -> None:
             save_live2d_settings(_saved)
         st.caption("🟢 發呆太久貝貝會主動關心你！" if idle_chat_enabled else "⚪ 已靜音～貝貝會乖乖等你開口。")
 
-    # ================= 側邊欄：對話框外觀 =================
+    # ================= 側邊欄：對話框外觀（跨重整記憶）=================
     with st.sidebar.expander("💬 對話框外觀", expanded=False):
+        # 先把存檔讀回來，當作各設定的初始值（沒放 value=，才不會每次 rerun 蓋掉讀回值）
+        _appear = load_live2d_settings()
+        for _ak in ("chat_user_emoji", "chat_custom_bg", "chat_bg_color", "chat_bubble_color"):
+            if _ak not in st.session_state:
+                st.session_state[_ak] = _appear.get(_ak, DEFAULT_LIVE2D_SETTINGS[_ak])
         chat_user_emoji = st.selectbox(
             "🧑 主人的頭像", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
             key="chat_user_emoji",
         )
         st.markdown("---")
         chat_custom_bg = st.toggle(
-            "🎨 啟用自訂對話框背景", value=False, key="chat_custom_bg",
+            "🎨 啟用自訂對話框背景", key="chat_custom_bg",
             help="關閉時維持預設外觀；開啟後才套用下面挑的顏色。",
         )
-        chat_bg_color = st.color_picker("對話框底色", value="#FFF5F5", key="chat_bg_color")
-        chat_bubble_color = st.color_picker("訊息泡泡底色", value="#FFFFFF", key="chat_bubble_color")
+        chat_bg_color = st.color_picker("對話框底色", key="chat_bg_color")
+        chat_bubble_color = st.color_picker("訊息泡泡底色", key="chat_bubble_color")
+        # 有變更就存檔，重整後才讀得回來
+        _new_appear = {
+            "chat_user_emoji": chat_user_emoji,
+            "chat_custom_bg": chat_custom_bg,
+            "chat_bg_color": chat_bg_color,
+            "chat_bubble_color": chat_bubble_color,
+        }
+        if any(_appear.get(_k) != _v for _k, _v in _new_appear.items()):
+            _saved_all = load_live2d_settings()
+            _saved_all.update(_new_appear)
+            save_live2d_settings(_saved_all)
 
     # ================= 載入預烤頭像（若有選）=================
     ai_b64_data = None
