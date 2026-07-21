@@ -749,7 +749,7 @@ def show_companion() -> None:
             _bg, _bubble = "transparent", "#FFFFFF"
         st.markdown(
             f"""<style>
-            .st-key-beibei_chat_box {{ background:{_bg} !important; border-radius:14px !important; padding:8px !important; }}
+            .st-key-beibei_chat_box {{ background:{_bg} !important; border-radius:14px !important; padding:8px 12px !important; }}
             </style>""",
             unsafe_allow_html=True,
         )
@@ -764,8 +764,8 @@ def show_companion() -> None:
                 _justify = "flex-end" if _is_user else "flex-start"
                 st.markdown(
                     f"""
-                    <div style="display:flex;justify-content:{_justify};margin:8px 0;">
-                      <div style="display:flex;flex-direction:{_dir};align-items:flex-start;gap:8px;max-width:82%;">
+                    <div style="display:flex;justify-content:{_justify};margin:8px 0;padding:0 10px;box-sizing:border-box;">
+                      <div style="display:flex;flex-direction:{_dir};align-items:flex-start;gap:8px;max-width:78%;">
                         <div style="flex:0 0 auto;">{_av}</div>
                         <div style="background:{_bubble};color:#222;padding:8px 12px;border-radius:14px;overflow-wrap:anywhere;">{_content}</div>
                       </div>
