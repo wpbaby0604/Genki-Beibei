@@ -56,6 +56,34 @@ MAX_RETRIES_PER_KEY = 3
 BASE_BACKOFF_SEC = 1.0
 
 
+# ==========================================
+# 貝貝的對話風格（使用者可自訂，聊天時即時生效）
+# ==========================================
+CHAT_STYLE_PRESETS = {
+    "活潑可愛（預設）": "個性活潑、元氣、可愛，講話輕快帶點撒嬌，讓人覺得溫暖又有活力。",
+    "溫柔知性": "個性溫柔、細心、有耐心，講話柔和成熟，像貼心的大姐姐，擅長用溫暖的話語安撫人。",
+    "傲嬌": "表面上有點嘴硬、愛逞強、會吐槽，其實內心很在乎對方；偶爾不小心流露關心又急著否認。",
+    "冷靜成熟": "個性沉穩、理性、可靠，講話簡潔有條理、情緒穩定，給人安心的感覺。",
+    "中二熱血": "個性熱血、誇張、充滿戲劇性，喜歡用誇飾的比喻和中二的口吻，能量滿滿。",
+    "自訂（只用下面的文字）": "",
+}
+DEFAULT_CHAT_STYLE = "活潑可愛（預設）"
+
+
+def _build_style_instruction() -> str:
+    """組出目前的『個性與說話風格』指示（預設風格 + 使用者自訂文字）。"""
+    try:
+        preset = st.session_state.get("chat_style_preset", DEFAULT_CHAT_STYLE)
+        custom = (st.session_state.get("chat_style_custom", "") or "").strip()
+    except Exception:
+        preset, custom = DEFAULT_CHAT_STYLE, ""
+    base = CHAT_STYLE_PRESETS.get(preset, CHAT_STYLE_PRESETS[DEFAULT_CHAT_STYLE])
+    parts = [p for p in (base, custom) if p]
+    if not parts:
+        parts = [CHAT_STYLE_PRESETS[DEFAULT_CHAT_STYLE]]
+    return "；".join(parts)
+
+
 def get_ai_response(user_data, is_audio: bool = False) -> str:
     """呼叫 Gemini。金鑰缺失或套件未安裝時，回傳友善訊息而非丟例外。"""
     api_keys = get_api_keys()
@@ -69,13 +97,18 @@ def get_ai_response(user_data, is_audio: bool = False) -> str:
     except Exception:
         return "（系統提示）找不到 google-genai 套件，請確認 requirements.txt 已安裝。"
 
+    style_instruction = _build_style_instruction()
     system_prompt = (
-        "妳是『貝貝』，一個活潑且可愛的 AI 陪伴者，並且深度了解過世界上發生的任何事，甚至是網路流行梗你也很擅長。"
-        "如果是用繁體中文問問題必須用繁體中文回覆，除非使用者特別要求語言。"
-        "你要考慮對方說的話是不是玩梗或者是唱歌，如果是唱歌你可以接著唱下一句，如果是玩梗的話你可以吐槽或者是接下一句。"
-        "平常聊天請保持親切 約30字，但如果使用者要求推薦、解釋或詢問具體問題時，請務必給出『完整的具體答案』。"
-        "口語中如果你是要裝可愛可以適度加入日系語助詞（一段對話最多用一次）。"
-        "句子結尾可以加入顏文字，例如：『(´･-･●`)』、『(｡•́ω•ˋ｡)』、『ʕ´•×•`ʔ』。"
+        "你是「貝貝」，使用者的 AI 陪伴夥伴。你溫暖、真誠、懂得傾聽，"
+        "也了解世界上的各種事物與網路流行梗。\n"
+        "【回覆規則】\n"
+        "1. 語言：使用者用繁體中文就用繁體中文回覆；使用者換語言或指定語言時才跟著換。\n"
+        "2. 長度：平常閒聊簡短自然（約 30～50 字）；但使用者要求推薦、解釋或詢問具體問題時，"
+        "務必給出完整、具體、有幫助的答案，不要草率帶過。\n"
+        "3. 互動：對方玩梗可以接梗或吐槽，對方唱歌可以接下一句；先同理對方情緒再回應內容，不要說教。\n"
+        "4. 關懷：使用者情緒低落時給予溫暖支持；絕不鼓勵任何自我傷害或危險行為。\n"
+        "5. 格式：直接講話，不要用條列、不要用星號 *；句尾可偶爾加一個顏文字或語助詞，但別每句都加。\n"
+        f"【個性與說話風格】\n{style_instruction}"
     )
 
     # 把最近的對話脈絡打包，賦予貝貝記憶
@@ -210,6 +243,8 @@ DEFAULT_LIVE2D_SETTINGS = {
     "chat_bg_color": "#FFF5F5",
     "chat_bubble_color": "#FFFFFF",
     "chat_user_avatar_path": "",
+    "chat_style_preset": "活潑可愛（預設）",
+    "chat_style_custom": "",
 }
 
 
@@ -460,6 +495,21 @@ def show_companion() -> None:
         unsafe_allow_html=True,
     )
 
+    # ---- 側邊欄收合欄標題：放大字級與 emoji 圖標，讓選項更明顯 ----
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] summary { padding:6px 4px !important; }
+        section[data-testid="stSidebar"] summary p,
+        section[data-testid="stSidebar"] summary span {
+            font-size: 1.22rem !important;
+            font-weight: 600 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # ---- session 初始化 ----
     st.session_state.setdefault("chat_history", [])
     st.session_state.setdefault("latest_audio", None)
@@ -502,6 +552,31 @@ def show_companion() -> None:
             horizontal=True,
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
+
+    # ================= 側邊欄：對話風格（使用者可自訂，跨重整記憶）=================
+    with st.sidebar.expander("🎭 對話風格", expanded=False):
+        _sty = load_live2d_settings()
+        for _sk in ("chat_style_preset", "chat_style_custom"):
+            if _sk not in st.session_state:
+                st.session_state[_sk] = _sty.get(_sk, DEFAULT_LIVE2D_SETTINGS[_sk])
+        chat_style_preset = st.selectbox(
+            "選一種個性：", list(CHAT_STYLE_PRESETS.keys()), key="chat_style_preset",
+        )
+        chat_style_custom = st.text_area(
+            "額外風格指示（可留白）",
+            key="chat_style_custom",
+            max_chars=300,
+            placeholder="例如：語尾愛加『喵』、常提到愛吃甜點、講話帶點台灣國語…",
+        )
+        st.caption("風格會影響貝貝的說話個性，聊天時即時生效。")
+        _new_sty = {
+            "chat_style_preset": chat_style_preset,
+            "chat_style_custom": chat_style_custom,
+        }
+        if any(_sty.get(_k) != _v for _k, _v in _new_sty.items()):
+            _all_sty = load_live2d_settings()
+            _all_sty.update(_new_sty)
+            save_live2d_settings(_all_sty)
 
     # ================= 側邊欄：互動行為模式 =================
     with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
