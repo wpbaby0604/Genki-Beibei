@@ -23,7 +23,6 @@ import re
 import json
 import time
 import base64
-import html
 import random
 import asyncio
 
@@ -38,6 +37,11 @@ import avatar_store
 
 # 🆕 待烤照片佇列（路線 C：使用者上傳照片 → 本機 baker 收件烤製）
 from drive_queue import DriveQueue, DriveQueueError
+
+# 🆕 公版角色（提示詞）預設庫
+from persona_store import (
+    PersonaStore, PersonaStoreError, DEFAULT_PERSONAS, EXAMPLE_PERSONA_PROMPT,
+)
 
 # edge-tts 的非同步在 Streamlit 腳本執行緒裡用 asyncio.run 即可；
 # 保險套用 nest_asyncio，避免某些情況「event loop already running」。
@@ -56,34 +60,6 @@ MAX_RETRIES_PER_KEY = 3
 BASE_BACKOFF_SEC = 1.0
 
 
-# ==========================================
-# 貝貝的對話風格（使用者可自訂，聊天時即時生效）
-# ==========================================
-CHAT_STYLE_PRESETS = {
-    "活潑可愛（預設）": "個性活潑、元氣、可愛，講話輕快帶點撒嬌，讓人覺得溫暖又有活力。",
-    "溫柔知性": "個性溫柔、細心、有耐心，講話柔和成熟，像貼心的大姐姐，擅長用溫暖的話語安撫人。",
-    "傲嬌": "表面上有點嘴硬、愛逞強、會吐槽，其實內心很在乎對方；偶爾不小心流露關心又急著否認。",
-    "冷靜成熟": "個性沉穩、理性、可靠，講話簡潔有條理、情緒穩定，給人安心的感覺。",
-    "中二熱血": "個性熱血、誇張、充滿戲劇性，喜歡用誇飾的比喻和中二的口吻，能量滿滿。",
-    "自訂（只用下面的文字）": "",
-}
-DEFAULT_CHAT_STYLE = "活潑可愛（預設）"
-
-
-def _build_style_instruction() -> str:
-    """組出目前的『個性與說話風格』指示（預設風格 + 使用者自訂文字）。"""
-    try:
-        preset = st.session_state.get("chat_style_preset", DEFAULT_CHAT_STYLE)
-        custom = (st.session_state.get("chat_style_custom", "") or "").strip()
-    except Exception:
-        preset, custom = DEFAULT_CHAT_STYLE, ""
-    base = CHAT_STYLE_PRESETS.get(preset, CHAT_STYLE_PRESETS[DEFAULT_CHAT_STYLE])
-    parts = [p for p in (base, custom) if p]
-    if not parts:
-        parts = [CHAT_STYLE_PRESETS[DEFAULT_CHAT_STYLE]]
-    return "；".join(parts)
-
-
 def get_ai_response(user_data, is_audio: bool = False) -> str:
     """呼叫 Gemini。金鑰缺失或套件未安裝時，回傳友善訊息而非丟例外。"""
     api_keys = get_api_keys()
@@ -97,18 +73,9 @@ def get_ai_response(user_data, is_audio: bool = False) -> str:
     except Exception:
         return "（系統提示）找不到 google-genai 套件，請確認 requirements.txt 已安裝。"
 
-    style_instruction = _build_style_instruction()
-    system_prompt = (
-        "你是「貝貝」，使用者的 AI 陪伴夥伴。你溫暖、真誠、懂得傾聽，"
-        "也了解世界上的各種事物與網路流行梗。\n"
-        "【回覆規則】\n"
-        "1. 語言：使用者用繁體中文就用繁體中文回覆；使用者換語言或指定語言時才跟著換。\n"
-        "2. 長度：平常閒聊簡短自然（約 30～50 字）；但使用者要求推薦、解釋或詢問具體問題時，"
-        "務必給出完整、具體、有幫助的答案，不要草率帶過。\n"
-        "3. 互動：對方玩梗可以接梗或吐槽，對方唱歌可以接下一句；先同理對方情緒再回應內容，不要說教。\n"
-        "4. 關懷：使用者情緒低落時給予溫暖支持；絕不鼓勵任何自我傷害或危險行為。\n"
-        "5. 格式：直接講話，不要用條列、不要用星號 *；句尾可偶爾加一個顏文字或語助詞，但別每句都加。\n"
-        f"【個性與說話風格】\n{style_instruction}"
+    # 🆕 從「目前選中的公版角色」讀提示詞；沒選時用內建的「預設貝貝」保底。
+    system_prompt = st.session_state.get(
+        "active_persona_prompt", DEFAULT_PERSONAS["預設貝貝"]
     )
 
     # 把最近的對話脈絡打包，賦予貝貝記憶
@@ -163,23 +130,6 @@ VOICE_PROFILES = {
 }
 
 
-# 語音專用清字：只保留「可朗讀」的字元（中文／中文擴充A／英數／空白／基本標點），
-# 其餘一律清掉——顏文字 (´･ω･｀)、emoji、箭頭、幾何符號等都會被移除，不會被唸出來。
-# 注意：這只影響「要唸的版本」，聊天泡泡仍顯示完整內容。
-_SPEECH_KEEP = re.compile(
-    r"[^\u4e00-\u9fff\u3400-\u4dbfA-Za-z0-9\s，。！？、；：,.!?]"
-)
-
-
-def _clean_for_speech(text) -> str:
-    t = str(text)
-    t = t.replace("～", "，").replace("~", "，").replace("*", "")
-    t = re.sub(r"[\U00010000-\U0010ffff]", "", t)   # 去掉星平面 emoji
-    t = _SPEECH_KEEP.sub("", t)                       # 只留可朗讀字元（顏文字符號一併清掉）
-    t = re.sub(r"\s+", " ", t).strip()                # 收斂多餘空白
-    return t
-
-
 async def generate_voice(text, gender=None):
     """文字轉語音（base64 mp3）。套件缺失或失敗時回傳 None。"""
     try:
@@ -188,9 +138,8 @@ async def generate_voice(text, gender=None):
         print("找不到 edge-tts 套件")
         return None
 
-    text_for_speech = _clean_for_speech(text)
-    if not text_for_speech:
-        return None   # 清完沒剩可唸的字（例如整句都是顏文字）→ 不發聲，避免 TTS 出錯
+    text_for_speech = text.replace("～", "，").replace("~", "，").replace("*", "")
+    text_for_speech = re.sub(r"[\U00010000-\U0010ffff]", "", text_for_speech)  # 去 emoji
 
     if gender is None:
         try:
@@ -236,16 +185,7 @@ SAVED_DIR = "saved_avatars"
 AVATAR_POS_FILE = os.path.join(SAVED_DIR, "avatar_positions.json")
 DEFAULT_AVATAR_POS = {"scale": 1.0, "x": 0, "y": 0}
 LIVE2D_SETTINGS_FILE = os.path.join(SAVED_DIR, "live2d_settings.json")
-DEFAULT_LIVE2D_SETTINGS = {
-    "idle_chat_enabled": True,
-    "chat_user_emoji": "🧑",
-    "chat_custom_bg": False,
-    "chat_bg_color": "#FFF5F5",
-    "chat_bubble_color": "#FFFFFF",
-    "chat_user_avatar_path": "",
-    "chat_style_preset": "活潑可愛（預設）",
-    "chat_style_custom": "",
-}
+DEFAULT_LIVE2D_SETTINGS = {"idle_chat_enabled": True}
 
 
 def load_avatar_positions() -> dict:
@@ -442,9 +382,124 @@ def _submit_photo(queue, photo, nickname) -> None:
     )
 
 
-def render_photo_upload_ui(embed: bool = False) -> None:
-    """側邊欄：上傳照片 → 送進待烤佇列。embed=True 時只渲染內容（供嵌進其他 expander，Streamlit 不允許 expander 巢狀）。"""
-    def _body():
+# ============================================================
+#  公版角色（提示詞）預設庫 UI —— 以下皆新增，未更動既有邏輯。
+# ============================================================
+@st.cache_resource
+def _get_persona_store():
+    try:
+        return PersonaStore.from_secrets()
+    except Exception as e:  # noqa: BLE001
+        print(f"[companion] PersonaStore 初始化失敗: {e}")
+        return None
+
+
+def _load_persona_library() -> dict:
+    """讀角色庫；store 建不起來或讀不到時用內建保底。"""
+    store = _get_persona_store()
+    if store is None:
+        return dict(DEFAULT_PERSONAS)
+    try:
+        return store.load_personas()
+    except Exception:  # noqa: BLE001
+        return dict(DEFAULT_PERSONAS)
+
+
+def _save_new_persona(library: dict, name: str, prompt: str) -> None:
+    store = _get_persona_store()
+    if store is None:
+        st.error("目前無法連上雲端儲存，稍後再試。")
+        return
+    name = (name or "").strip()
+    if not name:
+        st.error("請填角色名稱。")
+        return
+    if len(name) > 40:
+        st.error("角色名稱請控制在 40 字以內。")
+        return
+    if not (prompt or "").strip():
+        st.error("提示詞內容不可空白。")
+        return
+    lib = dict(library)
+    lib[name] = prompt.strip()
+    try:
+        store.save_personas(lib)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"儲存失敗：{e}")
+        return
+    st.session_state.active_persona_name = name
+    st.session_state.active_persona_prompt = prompt.strip()
+    st.success(f"✅ 已儲存角色「{name}」，並切換成它。")
+    st.rerun()
+
+
+def _delete_persona(library: dict, name: str) -> None:
+    if name == "（不刪除）" or name not in library:
+        st.warning("請先選一個要刪除的角色。")
+        return
+    if len(library) <= 1:
+        st.error("至少要保留一個角色，不能全部刪除。")
+        return
+    store = _get_persona_store()
+    if store is None:
+        st.error("目前無法連上雲端儲存，稍後再試。")
+        return
+    lib = dict(library)
+    lib.pop(name, None)
+    try:
+        store.save_personas(lib)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"刪除失敗：{e}")
+        return
+    if st.session_state.get("active_persona_name") == name:
+        st.session_state.pop("active_persona_name", None)
+        st.session_state.pop("active_persona_prompt", None)
+    st.success(f"🗑️ 已刪除角色「{name}」。")
+    st.rerun()
+
+
+def render_persona_ui() -> None:
+    """側邊欄：選擇貝貝的個性（公版角色庫），並可新增/編輯/刪除。"""
+    with st.sidebar.expander("🎭 選擇貝貝的個性", expanded=False):
+        library = _load_persona_library()
+        names = list(library.keys())
+        if not names:
+            st.warning("目前沒有可用的角色。")
+            return
+
+        cur = st.session_state.get("active_persona_name")
+        idx = names.index(cur) if cur in names else 0
+        chosen = st.selectbox("目前的個性", names, index=idx, key="persona_select")
+        # 設定目前生效的角色（get_ai_response 會讀這個）
+        st.session_state.active_persona_name = chosen
+        st.session_state.active_persona_prompt = library[chosen]
+        if st.checkbox("看看這個個性的設定內容", key="persona_show_current"):
+            st.caption(library[chosen])
+
+        st.markdown("---")
+        st.markdown("##### ➕ 新增／編輯角色")
+        st.caption("寫一份新的個性提示詞，存檔後全站共用（同名會覆蓋）。")
+        if st.checkbox("📋 顯示範例提示詞（可複製修改）", key="persona_show_example"):
+            st.code(EXAMPLE_PERSONA_PROMPT, language=None)
+
+        new_name = st.text_input("角色名稱", key="persona_new_name",
+                                 max_chars=40, placeholder="例如：害羞貝貝")
+        new_prompt = st.text_area("提示詞內容", key="persona_new_prompt",
+                                  height=200, placeholder="把上面的範例複製過來改…")
+        if st.button("💾 儲存角色", key="persona_save", use_container_width=True):
+            _save_new_persona(library, new_name, new_prompt)
+
+        st.markdown("---")
+        st.markdown("##### 🗑️ 刪除角色")
+        del_target = st.selectbox("選擇要刪除的角色", ["（不刪除）"] + names,
+                                  key="persona_del_select")
+        if st.button("刪除這個角色", key="persona_delete", use_container_width=True):
+            _delete_persona(library, del_target)
+
+
+def render_photo_upload_ui() -> None:
+    """側邊欄：上傳自己的照片 → 送進待烤佇列，顯示認領代碼與狀態。"""
+    with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
         st.caption(
             "上傳一張正面清楚的照片，我們會用 THA3 幫你烤成會動的專屬角色。"
             "⚠️ 動漫／插畫風效果最好；**真人自拍**可能略有落差。"
@@ -481,32 +536,11 @@ def render_photo_upload_ui(embed: bool = False) -> None:
                      disabled=disabled, use_container_width=True):
             _submit_photo(queue, photo, nickname)
 
-    if embed:
-        _body()
-    else:
-        with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
-            _body()
-
 
 def show_companion() -> None:
     st.button("⬅️ 取消並返回功能大廳", on_click=go_to, args=("home",))
     st.markdown(
         "<h2 style='color:#FF8A80;'>🐼 模式二：陪伴貝貝 (Live2D AI 即時陪伴)</h2>",
-        unsafe_allow_html=True,
-    )
-
-    # ---- 側邊欄收合欄標題：放大字級與 emoji 圖標，讓選項更明顯 ----
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] summary { padding:6px 4px !important; }
-        section[data-testid="stSidebar"] summary p,
-        section[data-testid="stSidebar"] summary span {
-            font-size: 1.22rem !important;
-            font-weight: 600 !important;
-        }
-        </style>
-        """,
         unsafe_allow_html=True,
     )
 
@@ -540,11 +574,7 @@ def show_companion() -> None:
                 st.caption(f"🎨 目前使用預烤頭像：**{selected_baked}**")
 
         st.markdown("---")
-        st.markdown("##### 📷 上傳照片訂製角色")
-        render_photo_upload_ui(embed=True)
-
-    # ================= 側邊欄：貝貝的聲音（獨立一欄）=================
-    with st.sidebar.expander("🔊 貝貝的聲音", expanded=False):
+        st.markdown("##### 🔊 貝貝的聲音")
         _voice_label = st.radio(
             "選擇陪伴聲線：",
             ["👧 女生 (曉曉)", "👦 男生 (雲希)"],
@@ -553,30 +583,11 @@ def show_companion() -> None:
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
 
-    # ================= 側邊欄：對話風格（使用者可自訂，跨重整記憶）=================
-    with st.sidebar.expander("🎭 對話風格", expanded=False):
-        _sty = load_live2d_settings()
-        for _sk in ("chat_style_preset", "chat_style_custom"):
-            if _sk not in st.session_state:
-                st.session_state[_sk] = _sty.get(_sk, DEFAULT_LIVE2D_SETTINGS[_sk])
-        chat_style_preset = st.selectbox(
-            "選一種個性：", list(CHAT_STYLE_PRESETS.keys()), key="chat_style_preset",
-        )
-        chat_style_custom = st.text_area(
-            "額外風格指示（可留白）",
-            key="chat_style_custom",
-            max_chars=300,
-            placeholder="例如：語尾愛加『喵』、常提到愛吃甜點、講話帶點台灣國語…",
-        )
-        st.caption("風格會影響貝貝的說話個性，聊天時即時生效。")
-        _new_sty = {
-            "chat_style_preset": chat_style_preset,
-            "chat_style_custom": chat_style_custom,
-        }
-        if any(_sty.get(_k) != _v for _k, _v in _new_sty.items()):
-            _all_sty = load_live2d_settings()
-            _all_sty.update(_new_sty)
-            save_live2d_settings(_all_sty)
+    # ================= 側邊欄：選擇貝貝的個性（公版角色庫）=================
+    render_persona_ui()
+
+    # ================= 側邊欄：上傳照片訂製角色（路線 C）=================
+    render_photo_upload_ui()
 
     # ================= 側邊欄：互動行為模式 =================
     with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
@@ -602,70 +613,19 @@ def show_companion() -> None:
             save_live2d_settings(_saved)
         st.caption("🟢 發呆太久貝貝會主動關心你！" if idle_chat_enabled else "⚪ 已靜音～貝貝會乖乖等你開口。")
 
-    # ================= 側邊欄：對話框外觀（跨重整記憶）=================
+    # ================= 側邊欄：對話框外觀 =================
     with st.sidebar.expander("💬 對話框外觀", expanded=False):
-        # 先把存檔讀回來，當作各設定的初始值（沒放 value=，才不會每次 rerun 蓋掉讀回值）
-        _appear = load_live2d_settings()
-        for _ak in ("chat_user_emoji", "chat_custom_bg", "chat_bg_color",
-                    "chat_bubble_color", "chat_user_avatar_path"):
-            if _ak not in st.session_state:
-                st.session_state[_ak] = _appear.get(_ak, DEFAULT_LIVE2D_SETTINGS[_ak])
         chat_user_emoji = st.selectbox(
-            "🧑 主人的頭像（未上傳圖片時使用）", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
+            "🧑 主人的頭像", ["🧑", "😀", "🧑‍💻", "👩", "👨", "🐱", "🐰", "⭐"],
             key="chat_user_emoji",
         )
-
-        # ---- 上傳自己的聊天頭像（會縮成小圖存起來，跨重整記憶）----
-        _up_av = st.file_uploader(
-            "🖼️ 或上傳自己的頭像 (PNG/JPG)", type=["png", "jpg", "jpeg"],
-            key="chat_user_avatar_upload",
-        )
-        if _up_av is not None:
-            _sig = f"{_up_av.name}:{_up_av.size}"
-            if st.session_state.get("_chat_av_sig") != _sig:
-                try:
-                    from PIL import Image
-                    _img = Image.open(_up_av).convert("RGBA")
-                    _img.thumbnail((96, 96))          # 縮小，避免拖慢頁面
-                    os.makedirs(SAVED_DIR, exist_ok=True)
-                    _av_path = os.path.join(SAVED_DIR, "user_chat_avatar.png")
-                    _img.save(_av_path, "PNG")
-                    st.session_state["chat_user_avatar_path"] = _av_path
-                    st.session_state["_chat_av_sig"] = _sig
-                    _sv = load_live2d_settings()
-                    _sv["chat_user_avatar_path"] = _av_path
-                    save_live2d_settings(_sv)
-                    st.success("頭像已更新！")
-                except Exception as _e:
-                    st.error(f"頭像處理失敗：{_e}")
-        if st.session_state.get("chat_user_avatar_path"):
-            st.caption("目前使用上傳的頭像。")
-            if st.button("↩️ 改回用表情符號", key="clear_chat_avatar"):
-                st.session_state["chat_user_avatar_path"] = ""
-                st.session_state.pop("_chat_av_sig", None)
-                _sv = load_live2d_settings()
-                _sv["chat_user_avatar_path"] = ""
-                save_live2d_settings(_sv)
-                st.rerun()
-
         st.markdown("---")
         chat_custom_bg = st.toggle(
-            "🎨 啟用自訂對話框背景", key="chat_custom_bg",
+            "🎨 啟用自訂對話框背景", value=False, key="chat_custom_bg",
             help="關閉時維持預設外觀；開啟後才套用下面挑的顏色。",
         )
-        chat_bg_color = st.color_picker("對話框底色", key="chat_bg_color")
-        chat_bubble_color = st.color_picker("訊息泡泡底色", key="chat_bubble_color")
-        # 有變更就存檔，重整後才讀得回來
-        _new_appear = {
-            "chat_user_emoji": chat_user_emoji,
-            "chat_custom_bg": chat_custom_bg,
-            "chat_bg_color": chat_bg_color,
-            "chat_bubble_color": chat_bubble_color,
-        }
-        if any(_appear.get(_k) != _v for _k, _v in _new_appear.items()):
-            _saved_all = load_live2d_settings()
-            _saved_all.update(_new_appear)
-            save_live2d_settings(_saved_all)
+        chat_bg_color = st.color_picker("對話框底色", value="#FFF5F5", key="chat_bg_color")
+        chat_bubble_color = st.color_picker("訊息泡泡底色", value="#FFFFFF", key="chat_bubble_color")
 
     # ================= 載入預烤頭像（若有選）=================
     ai_b64_data = None
@@ -798,56 +758,32 @@ def show_companion() -> None:
         st.markdown("<br>" * 3, unsafe_allow_html=True)
         st.subheader("💬 與貝貝聊天")
 
-        beibei_chat_avatar = "🐼"   # 貝貝聊天頭像用熊貓
-        user_emoji = st.session_state.get("chat_user_emoji", "🧑")
+        beibei_chat_avatar = "🐼"   # 雲端原生 Live2D：聊天頭像用熊貓
+        user_chat_avatar = st.session_state.get("chat_user_emoji", "🧑")
 
-        # 貝貝頭像（左）
-        beibei_av_html = f'<span style="font-size:24px;line-height:1;">{beibei_chat_avatar}</span>'
-        # 使用者頭像（右）：優先用上傳的小圖，沒有就用表情符號
-        _user_av_path = st.session_state.get("chat_user_avatar_path", "")
-        user_av_html = f'<span style="font-size:24px;line-height:1;">{html.escape(user_emoji)}</span>'
-        if _user_av_path and os.path.exists(_user_av_path):
-            try:
-                _b64 = base64.b64encode(open(_user_av_path, "rb").read()).decode("ascii")
-                user_av_html = (
-                    f'<img src="data:image/png;base64,{_b64}" '
-                    'style="width:32px;height:32px;border-radius:50%;object-fit:cover;">'
-                )
-            except OSError:
-                pass
-
-        # 顏色：開了自訂就用使用者選的，否則用預設
         if st.session_state.get("chat_custom_bg", False):
             _bg = st.session_state.get("chat_bg_color", "#FFF5F5")
             _bubble = st.session_state.get("chat_bubble_color", "#FFFFFF")
-        else:
-            _bg, _bubble = "transparent", "#FFFFFF"
-        st.markdown(
-            f"""<style>
-            .st-key-beibei_chat_box {{ background:{_bg} !important; border-radius:14px !important; padding:8px 12px !important; }}
-            </style>""",
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                f"""
+                <style>
+                .st-key-beibei_chat_box {{
+                    background:{_bg} !important; border-radius:14px !important; padding:6px 10px !important;
+                }}
+                .st-key-beibei_chat_box [data-testid="stChatMessage"] {{
+                    background:{_bubble} !important; border-radius:12px !important;
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
         chat_container = st.container(height=400, key="beibei_chat_box")
         with chat_container:
             for msg in st.session_state.chat_history:
-                _is_user = msg["role"] != "assistant"
-                _content = html.escape(str(msg["content"])).replace("\n", "<br>")
-                _av = user_av_html if _is_user else beibei_av_html
-                _dir = "row-reverse" if _is_user else "row"
-                _justify = "flex-end" if _is_user else "flex-start"
-                st.markdown(
-                    f"""
-                    <div style="display:flex;justify-content:{_justify};margin:8px 0;padding:0 10px;box-sizing:border-box;">
-                      <div style="display:flex;flex-direction:{_dir};align-items:flex-start;gap:8px;max-width:78%;">
-                        <div style="flex:0 0 auto;">{_av}</div>
-                        <div style="background:{_bubble};color:#222;padding:8px 12px;border-radius:14px;overflow-wrap:anywhere;">{_content}</div>
-                      </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                _av = beibei_chat_avatar if msg["role"] == "assistant" else user_chat_avatar
+                with st.chat_message(msg["role"], avatar=_av):
+                    st.write(msg["content"])
 
         col_text, col_mic = st.columns([4, 1])
         with col_text:
