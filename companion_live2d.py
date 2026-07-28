@@ -573,8 +573,8 @@ def show_companion() -> None:
                 selected_baked = st.selectbox("選擇自訂頭像：", baked_list, key="baked_avatar_select")
                 st.caption(f"🎨 目前使用預烤頭像：**{selected_baked}**")
 
-        st.markdown("---")
-        st.markdown("##### 🔊 貝貝的聲音")
+    # ================= 側邊欄：貝貝的聲音（獨立區塊）=================
+    with st.sidebar.expander("🔊 貝貝的聲音", expanded=False):
         _voice_label = st.radio(
             "選擇陪伴聲線：",
             ["👧 女生 (曉曉)", "👦 男生 (雲希)"],
@@ -583,11 +583,11 @@ def show_companion() -> None:
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
 
+    # ================= 側邊欄：上傳照片訂製角色（路線 C，緊接在角色外觀設定＋聲音後面）=================
+    render_photo_upload_ui()
+
     # ================= 側邊欄：選擇貝貝的個性（公版角色庫）=================
     render_persona_ui()
-
-    # ================= 側邊欄：上傳照片訂製角色（路線 C）=================
-    render_photo_upload_ui()
 
     # ================= 側邊欄：互動行為模式 =================
     with st.sidebar.expander("⚙️ 互動行為模式", expanded=False):
