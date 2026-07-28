@@ -498,43 +498,49 @@ def render_persona_ui() -> None:
 
 
 def render_photo_upload_ui() -> None:
-    """側邊欄：上傳自己的照片 → 送進待烤佇列，顯示認領代碼與狀態。"""
-    with st.sidebar.expander("📷 上傳照片訂製角色", expanded=False):
-        st.caption(
-            "上傳一張正面清楚的照片，我們會用 THA3 幫你烤成會動的專屬角色。"
-            "⚠️ 動漫／插畫風效果最好；**真人自拍**可能略有落差。"
-        )
+    """上傳自己的照片 → 送進待烤佇列，顯示認領代碼與狀態。
 
-        queue = _get_drive_queue()
-        if queue is None:
-            st.warning("目前無法連上雲端儲存，請稍後再試。")
-            return
+    注意：這裡故意不包 st.sidebar.expander——因為 Streamlit 不允許展開區塊巢狀，
+    這個函式現在是被嵌在 show_companion() 的「✨ 角色外觀設定」展開區塊裡面呼叫，
+    如果未來想讓它恢復成獨立的側邊欄區塊，呼叫端自己包一層 expander 即可。
+    """
+    st.markdown("---")
+    st.markdown("##### 📷 上傳照片訂製角色")
+    st.caption(
+        "上傳一張正面清楚的照片，我們會用 THA3 幫你烤成會動的專屬角色。"
+        "⚠️ 動漫／插畫風效果最好；**真人自拍**可能略有落差。"
+    )
 
-        last_code = st.session_state.get("uploaded_job_code")
-        if last_code:
-            _render_job_status(queue, last_code)
-            st.markdown("---")
+    queue = _get_drive_queue()
+    if queue is None:
+        st.warning("目前無法連上雲端儲存，請稍後再試。")
+        return
 
-        photo = st.file_uploader(
-            "選擇照片（png / jpg / webp，上限 5MB）",
-            type=["png", "jpg", "jpeg", "webp"],
-            key="companion_photo_uploader",
-        )
-        nickname = st.text_input(
-            "幫這個角色取個名字（可留白）",
-            key="companion_photo_nick",
-            max_chars=40,
-            placeholder="例如：mybeibei",
-        )
-        agree = st.checkbox(
-            "我了解照片會暫存於雲端供製作、完成後即刪除，且我有權使用這張照片。",
-            key="companion_photo_consent",
-        )
+    last_code = st.session_state.get("uploaded_job_code")
+    if last_code:
+        _render_job_status(queue, last_code)
+        st.markdown("---")
 
-        disabled = (photo is None) or (not agree)
-        if st.button("🚀 送出製作", key="companion_photo_submit",
-                     disabled=disabled, use_container_width=True):
-            _submit_photo(queue, photo, nickname)
+    photo = st.file_uploader(
+        "選擇照片（png / jpg / webp，上限 5MB）",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="companion_photo_uploader",
+    )
+    nickname = st.text_input(
+        "幫這個角色取個名字（可留白）",
+        key="companion_photo_nick",
+        max_chars=40,
+        placeholder="例如：mybeibei",
+    )
+    agree = st.checkbox(
+        "我了解照片會暫存於雲端供製作、完成後即刪除，且我有權使用這張照片。",
+        key="companion_photo_consent",
+    )
+
+    disabled = (photo is None) or (not agree)
+    if st.button("🚀 送出製作", key="companion_photo_submit",
+                 disabled=disabled, use_container_width=True):
+        _submit_photo(queue, photo, nickname)
 
 
 def show_companion() -> None:
@@ -573,6 +579,9 @@ def show_companion() -> None:
                 selected_baked = st.selectbox("選擇自訂頭像：", baked_list, key="baked_avatar_select")
                 st.caption(f"🎨 目前使用預烤頭像：**{selected_baked}**")
 
+        # 上傳照片訂製角色（路線 C）——嵌在同一個「角色外觀設定」展開區塊裡面
+        render_photo_upload_ui()
+
     # ================= 側邊欄：貝貝的聲音（獨立區塊）=================
     with st.sidebar.expander("🔊 貝貝的聲音", expanded=False):
         _voice_label = st.radio(
@@ -582,9 +591,6 @@ def show_companion() -> None:
             horizontal=True,
         )
         st.session_state.beibei_voice_gender = "male" if "男生" in _voice_label else "female"
-
-    # ================= 側邊欄：上傳照片訂製角色（路線 C，緊接在角色外觀設定＋聲音後面）=================
-    render_photo_upload_ui()
 
     # ================= 側邊欄：選擇貝貝的個性（公版角色庫）=================
     render_persona_ui()
