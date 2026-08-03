@@ -10,7 +10,7 @@ _frontend_dir = os.path.join(_parent_dir, "frontend")
 _component_func = components.declare_component("render_beibei", path=_frontend_dir)
 
 # 🌟 修正 1：在括號裡加上 companion_mode: int = 1 的預設參數
-def render_beibei(audio_data: str = "", bg_image: str = "", ai_webp: str = None, companion_mode: int = 1, model_scale: float = 1.0, model_x: int = 0, model_y: int = 0, key=None):
+def render_beibei(audio_data: str = "", bg_image: str = "", ai_webp: str = None, companion_mode: int = 1, model_scale: float = 1.0, model_x: int = 0, model_y: int = 0, key=None, emotion: str = "neutral"):
     component_value = _component_func(
         audio_data=audio_data,
         bg_image=bg_image,
@@ -19,6 +19,7 @@ def render_beibei(audio_data: str = "", bg_image: str = "", ai_webp: str = None,
         model_scale=model_scale, # 🌟 裝進包裹
         model_x=model_x,         # 🌟 裝進包裹
         model_y=model_y,         # 🌟 裝進包裹
+        emotion=emotion,         # 🆕 目前情緒（除錯用標籤，前端拿去顯示目前狀態）
         key=key,
         default=0
     )
