@@ -721,6 +721,7 @@ def show_companion() -> None:
                 model_scale=model_scale,
                 model_x=model_x,
                 model_y=model_y,
+                emotion=st.session_state.get("beibei_emotion", "neutral"),  # 🆕 讓前端能顯示目前表情除錯標籤
             )
 
         # ---- 事件處理：點擊 / 打瞌睡 / 主動搭話 ----
