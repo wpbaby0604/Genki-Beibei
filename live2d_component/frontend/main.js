@@ -210,6 +210,12 @@ function calculateEAR(landmarks, indices) {
 const GRID_INPUT_RANGE = 18;   // 把 currentFaceAngleX/Y 視為 ±18 度範圍（依實測微調）
 const GRID_FLIP_X = false;     // 若左右相反，改成 true
 const GRID_FLIP_Y = false;     // 若上下相反，改成 true
+let currentEmotionLabel = "neutral";   // 🆕 從 Python 端傳來的目前情緒（happy/sad/angry/neutral）
+function setDebugLabel(text) {
+    const el = document.getElementById('beibei_debug_label');
+    if (el) el.textContent = "狀態：" + text;
+}
+
 // 🌟 換幀輔助函式：讓 aiImg 換圖時用交叉淡出取代硬切換，減少「跳格子」的頓挫感。
 // 新畫面先在上層淡入層裡淡入，淡入完成後才「歸位」到底層 aiImg 本身，
 // 這樣 dataset/onclick/display 這些狀態邏輯完全不用動，只是換圖的視覺效果變順了。
@@ -392,6 +398,24 @@ Streamlit.onRender(function(args) {
             aiImgFade.style.transition = 'opacity 0.12s linear';
             document.body.appendChild(aiImgFade);
         }
+        // 🆕 除錯用標籤：顯示目前實際播放的狀態，方便測試時對照表情有沒有問題
+        let debugLabel = document.getElementById('beibei_debug_label');
+        if (!debugLabel) {
+            debugLabel = document.createElement('div');
+            debugLabel.id = 'beibei_debug_label';
+            debugLabel.style.position = 'fixed';
+            debugLabel.style.top = '8px';
+            debugLabel.style.left = '8px';
+            debugLabel.style.zIndex = '10001';
+            debugLabel.style.padding = '4px 10px';
+            debugLabel.style.borderRadius = '6px';
+            debugLabel.style.background = 'rgba(0,0,0,0.55)';
+            debugLabel.style.color = '#fff';
+            debugLabel.style.fontFamily = 'monospace';
+            debugLabel.style.fontSize = '12px';
+            debugLabel.style.pointerEvents = 'none';
+            document.body.appendChild(debugLabel);
+        }
         // 🌟 動態讀取 Python 傳來的參數 (若無則使用預設值)
         let scale = args.model_scale !== undefined ? args.model_scale : 1.0;
         let offsetX = args.model_x !== undefined ? args.model_x : 0;
@@ -464,6 +488,7 @@ Streamlit.onRender(function(args) {
 
  // 🌟 同步目前模式給 onResults 用（新增這行）
         currentCompanionMode = (typeof args.companion_mode !== 'undefined') ? args.companion_mode : 1;
+        currentEmotionLabel = (typeof args.emotion !== 'undefined' && args.emotion) ? args.emotion : "neutral";
 
         // 🌟 狀態機切換邏輯
         let isSpeaking = (currentPlayingAudio && !currentPlayingAudio.paused);
@@ -472,28 +497,35 @@ Streamlit.onRender(function(args) {
         if (isSpeaking) {
             // 講話中：強制動嘴巴
             setAiFrame(aiImg.dataset.talkingB64);
+            setDebugLabel("talk_" + currentEmotionLabel);
         } else if (isDrowsyAlert) {
             // 打瞌睡：強制播放驚醒動作
             setAiFrame(aiImg.dataset.alertB64);
+            setDebugLabel("alert（打瞌睡警報）");
         } else if (currentCompanionMode === 1) {
             // 🎭 模式一：平常安靜發呆（閉嘴呼吸），約每 25 秒才可能打一次哈欠
             let timeSec = Math.floor(Date.now() / 1000);
             if (timeSec % 25 === 0 && Math.random() < 0.5 && aiImg.dataset.yawnB64) {
                 setAiFrame(aiImg.dataset.yawnB64);
+                setDebugLabel("yawn（打哈欠）");
             } else {
                 setAiFrame(aiImg.dataset.idleB64);
+                setDebugLabel("idle（發呆）");
             }
         } else if (currentCompanionMode === 2 && beibeiGrid.length > 0) {
             // 🪞 模式二：跟臉！這裡先放正中央那張避免空白，
             //            真正的即時換圖交給 onResults 每幀去做
             if (!aiImg.src) aiImg.src = beibeiGrid[Math.floor(beibeiGrid.length / 2)];
+            setDebugLabel("跟臉中（VR 臉部同步）");
         } else {
             // 保底：沒有網格資料時就乖乖發呆
             setAiFrame(aiImg.dataset.idleB64);
+            setDebugLabel("idle（無網格資料）");
         }
 
         aiImg.style.display = 'block';
         aiImgFade.style.display = 'block';
+        debugLabel.style.display = 'block';
 
     } else {
 // 🌟 1. 隱藏 AI 圖片，顯示原生 Live2D 畫布
@@ -504,6 +536,8 @@ Streamlit.onRender(function(args) {
         if (aiImg) aiImg.style.display = 'none';
         let aiImgFadeEl = document.getElementById('ai_beibei_img_fade');
         if (aiImgFadeEl) aiImgFadeEl.style.display = 'none';
+        const debugLabelEl = document.getElementById('beibei_debug_label');
+        if (debugLabelEl) debugLabelEl.style.display = 'none';
         
         // 🌟 2. 動態調整 Live2D 模型大小與位置
         if (beibeiModel) {
