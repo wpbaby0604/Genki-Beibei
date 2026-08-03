@@ -19,7 +19,7 @@ let beibeiGridDim = 7;          // 🌟 網格邊長 N
 
 let smoothFaceAngleX = 0;   // 🌟 濾平後的臉部角度（給選格用）
 let smoothFaceAngleY = 0;
-const FACE_SMOOTH = 0.25;   // 0~1：越小越平滑但反應慢，越大越靈敏但較抖
+const FACE_SMOOTH = 0.18;   // 0~1：越小越平滑但反應慢，越大越靈敏但較抖（原本 0.25，調低換取更穩定的追蹤）
 
 // 🌟 新增：5分鐘主動搭話的專屬變數
 let idleTimeout = null;
@@ -146,7 +146,7 @@ function playAudioAndSyncLip(base64Audio) {
         if (ai && ai.style.display !== 'none' && ai.dataset.idleB64) {
             // 模式二的跟臉由 onResults 每幀接手，這裡只負責把模式一/待機切回 idle
             if (!(currentCompanionMode === 2 && beibeiGrid.length > 0)) {
-                ai.src = ai.dataset.idleB64;
+                setAiFrame(ai.dataset.idleB64);
             }
         }
     };
@@ -210,6 +210,27 @@ function calculateEAR(landmarks, indices) {
 const GRID_INPUT_RANGE = 18;   // 把 currentFaceAngleX/Y 視為 ±18 度範圍（依實測微調）
 const GRID_FLIP_X = false;     // 若左右相反，改成 true
 const GRID_FLIP_Y = false;     // 若上下相反，改成 true
+// 🌟 換幀輔助函式：讓 aiImg 換圖時用交叉淡出取代硬切換，減少「跳格子」的頓挫感。
+// 新畫面先在上層淡入層裡淡入，淡入完成後才「歸位」到底層 aiImg 本身，
+// 這樣 dataset/onclick/display 這些狀態邏輯完全不用動，只是換圖的視覺效果變順了。
+let _aiFadeTimer = null;
+function setAiFrame(newSrc) {
+    const base = document.getElementById('ai_beibei_img');
+    const fade = document.getElementById('ai_beibei_img_fade');
+    if (!base || !newSrc || base.src === newSrc) return;
+    if (!fade) { base.src = newSrc; return; }   // 保底：淡入層還沒建立好就直接切換
+
+    if (_aiFadeTimer) clearTimeout(_aiFadeTimer);
+    fade.src = newSrc;
+    fade.style.display = base.style.display;
+    // 用 rAF 確保瀏覽器先畫出 opacity:0 的起始狀態，transition 才會真的播放
+    requestAnimationFrame(() => { fade.style.opacity = '1'; });
+    _aiFadeTimer = setTimeout(() => {
+        base.src = newSrc;
+        fade.style.opacity = '0';
+    }, 130);
+}
+
 function faceAngleToGridIndex(ax, ay) {
     const N = beibeiGridDim;
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -264,7 +285,7 @@ faceMesh.onResults((results) => {
             const drowsy = (drowsyStartTime && Date.now() - drowsyStartTime > DROWSY_TIME_LIMIT);
             if (!speaking && !drowsy) {   // 說話/打瞌睡動畫優先，其餘時間才跟臉
                 const src = beibeiGrid[faceAngleToGridIndex(smoothFaceAngleX, smoothFaceAngleY)];
-                if (src && aiImg.src !== src) aiImg.src = src;
+                setAiFrame(src);
             }
         }
     }
@@ -360,6 +381,17 @@ Streamlit.onRender(function(args) {
             aiImg.id = 'ai_beibei_img';
             document.body.appendChild(aiImg);
         }
+        // 🌟 新增：疊在上面的淡入層，專門用來做換幀的交叉淡出，
+        //          本身不承載任何狀態（dataset/onclick 一律留在 aiImg 上）
+        let aiImgFade = document.getElementById('ai_beibei_img_fade');
+        if (!aiImgFade) {
+            aiImgFade = document.createElement('img');
+            aiImgFade.id = 'ai_beibei_img_fade';
+            aiImgFade.style.pointerEvents = 'none';
+            aiImgFade.style.opacity = '0';
+            aiImgFade.style.transition = 'opacity 0.12s linear';
+            document.body.appendChild(aiImgFade);
+        }
         // 🌟 動態讀取 Python 傳來的參數 (若無則使用預設值)
         let scale = args.model_scale !== undefined ? args.model_scale : 1.0;
         let offsetX = args.model_x !== undefined ? args.model_x : 0;
@@ -381,6 +413,16 @@ Streamlit.onRender(function(args) {
         
         aiImg.style.zIndex = '9999'; 
         aiImg.style.pointerEvents = 'auto';
+
+        // 🌟 淡入層完全比照主圖層的定位，只疊在正上方（zIndex +1），負責交叉淡出
+        aiImgFade.style.height = aiImg.style.height;
+        aiImgFade.style.width = aiImg.style.width;
+        aiImgFade.style.objectFit = 'contain';
+        aiImgFade.style.position = 'absolute';
+        aiImgFade.style.bottom = aiImg.style.bottom;
+        aiImgFade.style.left = '50%';
+        aiImgFade.style.transform = aiImg.style.transform;
+        aiImgFade.style.zIndex = '10000';
 
             // 🌟 補回觸覺神經！點擊圖片直接發送訊號給 Python
         aiImg.onclick = () => {
@@ -429,17 +471,17 @@ Streamlit.onRender(function(args) {
 
         if (isSpeaking) {
             // 講話中：強制動嘴巴
-            aiImg.src = aiImg.dataset.talkingB64;
+            setAiFrame(aiImg.dataset.talkingB64);
         } else if (isDrowsyAlert) {
             // 打瞌睡：強制播放驚醒動作
-            aiImg.src = aiImg.dataset.alertB64;
+            setAiFrame(aiImg.dataset.alertB64);
         } else if (currentCompanionMode === 1) {
             // 🎭 模式一：平常安靜發呆（閉嘴呼吸），約每 25 秒才可能打一次哈欠
             let timeSec = Math.floor(Date.now() / 1000);
             if (timeSec % 25 === 0 && Math.random() < 0.5 && aiImg.dataset.yawnB64) {
-                aiImg.src = aiImg.dataset.yawnB64;
+                setAiFrame(aiImg.dataset.yawnB64);
             } else {
-                aiImg.src = aiImg.dataset.idleB64;
+                setAiFrame(aiImg.dataset.idleB64);
             }
         } else if (currentCompanionMode === 2 && beibeiGrid.length > 0) {
             // 🪞 模式二：跟臉！這裡先放正中央那張避免空白，
@@ -447,10 +489,11 @@ Streamlit.onRender(function(args) {
             if (!aiImg.src) aiImg.src = beibeiGrid[Math.floor(beibeiGrid.length / 2)];
         } else {
             // 保底：沒有網格資料時就乖乖發呆
-            aiImg.src = aiImg.dataset.idleB64;
+            setAiFrame(aiImg.dataset.idleB64);
         }
 
         aiImg.style.display = 'block';
+        aiImgFade.style.display = 'block';
 
     } else {
 // 🌟 1. 隱藏 AI 圖片，顯示原生 Live2D 畫布
@@ -459,13 +502,11 @@ Streamlit.onRender(function(args) {
         
         let aiImg = document.getElementById('ai_beibei_img');
         if (aiImg) aiImg.style.display = 'none';
+        let aiImgFadeEl = document.getElementById('ai_beibei_img_fade');
+        if (aiImgFadeEl) aiImgFadeEl.style.display = 'none';
         
         // 🌟 2. 動態調整 Live2D 模型大小與位置
         if (beibeiModel) {
-            // 🔧 修正「原生模型往右飄」：重繪當下先把畫布尺寸同步到目前視窗，
-            //    避免讀到還沒更新的舊寬度，導致 x 沒對準中心而一次次累積偏移。
-            app.resize();
-
             // 讀取 Python 傳來的參數，如果沒傳就用預設值 1.0 和 0
             let scale = args.model_scale !== undefined ? args.model_scale : 1.0;
             let offsetX = args.model_x !== undefined ? args.model_x : 0;
