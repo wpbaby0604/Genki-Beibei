@@ -58,7 +58,8 @@ ACTION_FRAMES = {
     "talk_angry":   (24, 90),
 }
 
-GRID_DIM = 7
+GRID_DIM = 11             # 從 7 加大到 11：格子切更細，每格角度差變小，跳格子的頓挫感會降低
+                          # （代價：網格從 49 張變 121 張，烤製時間變長、json 檔案變大）
 GRID_YAW_RANGE_DEG = 20.0        # 對應 THA3 GRID_HEAD_X_RANGE 的角度類比值（未精確校準，見檔頭說明）
 GRID_PITCH_RANGE_DEG = 15.0      # 對應 THA3 GRID_HEAD_Y_RANGE 的角度類比值
 
@@ -78,18 +79,24 @@ def _lerp(a, b, t):
 
 
 def _apply_expression_overlay(params, expr):
-    """疊加喜怒哀樂到基礎說話參數上（近似 THA3 的 _apply_expression）。"""
+    """疊加喜怒哀樂到基礎說話參數上。
+    針對真人臉大幅拉高幅度——真人臉比動漫圖需要更誇張的參數才看得出情緒差異，
+    而且情緒相關參數（smile/eyebrow/eye）改成「直接設定固定值」而非在 sin 波動上加成，
+    避免說話時的頭部/眉毛擺動把情緒稀釋掉。"""
     if expr == "happy":
-        params["smile"] = 0.8
-        params["eyebrow"] += 5.0
+        params["smile"] = 1.3                     # 上限，最大燦笑（嘴角明顯上揚）
+        params["eyebrow"] = 22.0                  # 固定大幅上揚（不再被 sin 稀釋）
+        params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.25, 0.85)  # 眼睛睜大有神
     elif expr == "sad":
-        params["smile"] = -0.2
-        params["eyebrow"] -= 8.0
-        params["input_head_pitch_variation"] -= 3.0
+        params["smile"] = -0.3                    # 下限，明顯嘴角下垂
+        params["eyebrow"] = -28.0                 # 接近下限，強烈八字眉
+        params["input_head_pitch_variation"] = -8.0   # 明顯低頭
+        params["input_eye_ratio"] *= 0.7          # 眼神明顯沒精神、下垂
     elif expr == "angry":
-        params["smile"] = -0.15
-        params["eyebrow"] -= 20.0
-        params["input_eye_ratio"] *= 0.7   # 瞇眼
+        params["smile"] = -0.3                    # 嘴角下壓
+        params["eyebrow"] = -30.0                 # 下限，最強皺眉
+        params["input_eye_ratio"] *= 0.45         # 強烈瞇眼、瞪視
+        params["lip_variation_two"] = params.get("lip_variation_two", 0.0) + 10.0  # 抿嘴/咬牙
     return params
 
 
@@ -126,14 +133,14 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
         c = math.sin(math.pi * t)
         p["input_lip_ratio"] = _lerp(source_lip_ratio, 0.75, c)
         p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.05, c)
-        p["eyebrow"] = 15.0 * c
+        p["eyebrow"] = 20.0 * c
         p["input_head_pitch_variation"] = -5.0 * c
 
     elif action == "alert":
-        p["input_head_yaw_variation"] = 8.0 * math.sin(t * 6 * math.pi)
-        p["input_eye_ratio"] = 0.7
-        p["eyebrow"] = 20.0
-        p["input_lip_ratio"] = 0.15
+        p["input_head_yaw_variation"] = 10.0 * math.sin(t * 6 * math.pi)
+        p["input_eye_ratio"] = 0.75
+        p["eyebrow"] = 27.0
+        p["input_lip_ratio"] = 0.38   # 明顯張大的「啊！」嘴形，不是只微微張開
 
     elif action.startswith("talk"):
         preset = VISEME_PRESETS[(i // 2) % len(VISEME_PRESETS)]
@@ -141,8 +148,8 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
         p["lip_variation_one"] = preset[1]
         p["lip_variation_two"] = preset[2]
         p["lip_variation_three"] = preset[3]
-        p["input_head_pitch_variation"] = 2.0 * math.sin(2 * math.pi * t)
-        p["eyebrow"] = 3.0 * math.sin(2 * math.pi * t * 2)
+        p["input_head_pitch_variation"] = 3.0 * math.sin(2 * math.pi * t)
+        p["eyebrow"] = 6.0 * math.sin(2 * math.pi * t * 2)
 
         if action == "talk_happy":
             _apply_expression_overlay(p, "happy")
@@ -150,6 +157,19 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
             _apply_expression_overlay(p, "sad")
         elif action == "talk_angry":
             _apply_expression_overlay(p, "angry")
+
+        # 第 0 幀強制閉嘴：這一幀是「表情總覽」抓來當代表的畫面，
+        # 閉嘴才能讓嘴角的笑/垂、眉毛的情緒清楚呈現，不會被說話張大的嘴蓋掉。
+        # （後續幀正常做視位循環，動畫播放時嘴巴照樣會動。）
+        if i == 0:
+            if action == "talk_neutral":
+                # 中性說話：保留一點半張嘴，跟閉嘴的 idle 區隔開來
+                p["input_lip_ratio"] = 0.12
+            else:
+                p["input_lip_ratio"] = 0.0
+            p["lip_variation_one"] = 0.0
+            p["lip_variation_two"] = p.get("lip_variation_two", 0.0)  # 保留 angry 的抿嘴
+            p["lip_variation_three"] = 0.0
 
     return p
 
