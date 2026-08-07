@@ -88,14 +88,22 @@ def _apply_expression_overlay(params, expr):
         params["eyebrow"] = 22.0                  # 固定大幅上揚（不再被 sin 稀釋）
         params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.25, 0.85)  # 眼睛睜大有神
     elif expr == "sad":
-        params["smile"] = -0.3                    # 下限，明顯嘴角下垂
-        params["eyebrow"] = -28.0                 # 接近下限，強烈八字眉
-        params["input_head_pitch_variation"] = -8.0   # 明顯低頭
-        params["input_eye_ratio"] *= 0.7          # 眼神明顯沒精神、下垂
+        # sad 的辨識度靠「下垂眼 + 低頭 + 柔化的眉毛」，跟 angry 的銳利瞪視拉開。
+        # 眉毛不再往下限壓（那會變成臭臉/生氣），而是收到小幅負值，
+        # 讓整體讀起來是「無力/委屈」而非「不爽」。
+        params["smile"] = -0.3                    # 明顯嘴角下垂
+        params["eyebrow"] = -10.0                 # 柔化：只小幅八字，不跟 angry 搶皺眉
+        params["input_head_pitch_variation"] = -9.0   # 更明顯低頭，做出垂頭喪氣
+        params["input_head_roll_variation"] = -3.0    # 頭微歪，加強無力感
+        params["input_eye_ratio"] *= 0.5          # 眼睛半垂、沒精神（比 angry 更小）
     elif expr == "angry":
-        params["smile"] = -0.3                    # 嘴角下壓
-        params["eyebrow"] = -30.0                 # 下限，最強皺眉
-        params["input_eye_ratio"] *= 0.45         # 強烈瞇眼、瞪視
+        # angry 的辨識度靠「強皺眉 + 銳利的瞪視 + 抿嘴」。
+        # 關鍵：眼睛不再縮小，而是維持正常/略大，做出「瞪」的銳利感，
+        # 這樣才跟 sad 的半垂眼形成明確對比（讓眼睛狀態承擔 sad/angry 的區別）。
+        params["smile"] = -0.35                   # 嘴角下壓（略強於 sad）
+        params["eyebrow"] = -30.0                 # 下限，最強皺眉（跟 sad 的 -10 拉開）
+        params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.1, 0.8)  # 正常/略大＝瞪視
+        params["input_head_pitch_variation"] = 2.0    # 略抬下巴，帶挑釁感（與 sad 低頭相反）
         params["lip_variation_two"] = params.get("lip_variation_two", 0.0) + 10.0  # 抿嘴/咬牙
     return params
 
