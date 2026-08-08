@@ -638,13 +638,37 @@ def show_companion() -> None:
         chat_bg_color = st.color_picker("對話框底色", value="#FFF5F5", key="chat_bg_color")
         chat_bubble_color = st.color_picker("訊息泡泡底色", value="#FFFFFF", key="chat_bubble_color")
 
+    # ================= 側邊欄：除錯 — 強制表情/動作 =================
+    # 選「無」＝正常自動行為；選其他就一直保持那個表情，方便烤完比對微調。
+    # 說話類(talk_*)靠「重用現有情緒機制」切換，不額外增加傳給前端的資料量。
+    _debug_options = {
+        "無（正常）":              ("", None),
+        "idle（發呆）":            ("idle", None),
+        "idle_tilt（偏頭）":       ("idle_tilt", None),
+        "idle_glance（飄眼）":     ("idle_glance", None),
+        "idle_nod（點頭）":        ("idle_nod", None),
+        "yawn（打哈欠）":          ("yawn", None),
+        "alert（驚醒）":           ("alert", None),
+        "talk_neutral（說話-中性）": ("talking", "neutral"),
+        "talk_happy（說話-開心）":   ("talking", "happy"),
+        "talk_sad（說話-難過）":     ("talking", "sad"),
+        "talk_angry（說話-生氣）":   ("talking", "angry"),
+    }
+    with st.sidebar.expander("🔧 除錯：強制表情/動作", expanded=False):
+        _debug_pick = st.selectbox(
+            "強制顯示（選「無」＝恢復正常）", list(_debug_options.keys()),
+            key="debug_forced_pick",
+        )
+        st.caption("選一個就一直保持那個表情，方便你比對微調；選「無」即恢復自動待機/說話/跟臉。")
+    forced_action, _forced_emotion = _debug_options[_debug_pick]
+    # 被強制成說話表情時，用被強制的情緒去挑對應的說話版；否則用正常情緒。
+    _render_emotion = _forced_emotion if _forced_emotion else st.session_state.get("beibei_emotion", "neutral")
+
     # ================= 載入預烤頭像（若有選）=================
     ai_b64_data = None
     if selected_baked:
         try:
-            ai_b64_data = get_ai_webp(
-                selected_baked, st.session_state.get("beibei_emotion", "neutral")
-            )
+            ai_b64_data = get_ai_webp(selected_baked, _render_emotion)
         except Exception as e:   # noqa: BLE001
             print(f"[companion] get_ai_webp 失敗: {e}")
             st.sidebar.error(f"⚠️ 讀取頭像「{selected_baked}」失敗，改用原生 Live2D。")
@@ -726,7 +750,8 @@ def show_companion() -> None:
                 model_scale=model_scale,
                 model_x=model_x,
                 model_y=model_y,
-                emotion=st.session_state.get("beibei_emotion", "neutral"),  # 🆕 讓前端能顯示目前表情除錯標籤
+                emotion=_render_emotion,     # 🆕 目前情緒（除錯強制說話表情時＝被強制的情緒）
+                forced_action=forced_action, # 🔧 除錯：強制顯示某表情/動作（""＝正常）
             )
 
         # ---- 事件處理：點擊 / 打瞌睡 / 主動搭話 ----
