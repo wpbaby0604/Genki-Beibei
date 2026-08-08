@@ -30,12 +30,12 @@ let drowsyStartTime = null;
 const DROWSY_THRESHOLD = 0.2; // 閉眼判定標準 (跟妳 Python 端一樣)
 const DROWSY_TIME_LIMIT = 3000; // 閉眼超過 3 秒 (3000毫秒) 就叫醒
 
-// 🌟 待機時的「隨機穿插」排程：記住現在該播哪一段、以及下一次該換段的時間點。
-//    目的：不再死板板重播 idle，而是「發呆 → 偏頭 → 飄眼 → 點頭 → 打哈欠…」隨機接，間隔不規律。
+// 🌟 待機排程：平常安靜「發呆(idle)」佔大多數時間，偶爾才插一個「只做一次」的小動作，哈欠很稀有。
 let idleNextSwitchAt = 0;               // 下一次該重新抽段的時間戳 (Date.now() 毫秒)
 let idleClipSrc = null;                 // 目前待機正在播的那段圖 (base64 src)
 let idleClipLabel = 'idle（發呆）';      // 左上角除錯標籤文字
-let idlePool = [];                      // 🌟 可用的待機小動作池：{src,label}[]（idle + 偏頭/飄眼/點頭）
+let idlePool = [];                      // 🌟 只放「偶爾的小動作」：偏頭/飄眼/點頭（不含平常的 idle）
+let yawnCooldownUntil = 0;              // 🌟 打完哈欠後，這個時間點之前不再打（避免狂打哈欠）
 
 // 🌟 新增：重置沙漏的控制功能
 function resetIdleTimer() {
@@ -477,9 +477,9 @@ Streamlit.onRender(function(args) {
                 aiImg.dataset.yawnB64 = "data:image/webp;base64," + data.yawn;
                 aiImg.dataset.alertB64 = "data:image/webp;base64," + data.alert;
 
-                // 🌟 組「待機小動作池」：一定有 idle；偏頭/飄眼/點頭若這顆頭像有烤才加入。
-                //    舊頭像沒有這些 key（膠水層會回空字串），length===0 就不放進池 → 向下相容。
-                idlePool = [{ src: aiImg.dataset.idleB64, label: 'idle（發呆）' }];
+                // 🌟 組「小動作池」：只放偏頭/飄眼/點頭（平常的 idle 不放進來，另外處理）。
+                //    舊頭像沒有這些 key（膠水層會回空字串），length===0 就不放 → 向下相容。
+                idlePool = [];
                 const extraIdle = [
                     [data.idle_tilt,   'idle_tilt（偏頭）'],
                     [data.idle_glance, 'idle_glance（飄眼）'],
@@ -504,7 +504,7 @@ Streamlit.onRender(function(args) {
                 aiImg.dataset.talkingB64 = "data:image/webp;base64," + args.ai_webp;
                 aiImg.dataset.yawnB64 = "data:image/webp;base64," + args.ai_webp;
                 aiImg.dataset.alertB64 = "data:image/webp;base64," + args.ai_webp;
-                idlePool = [{ src: aiImg.dataset.idleB64, label: 'idle（發呆）' }];  // 單圖時池子只有一段
+                idlePool = [];  // 單圖時沒有小動作，平常就是那張 idle
             }
         } catch(e) { console.log("解析動畫 JSON 失敗", e); }
 
@@ -525,24 +525,30 @@ Streamlit.onRender(function(args) {
             setAiFrame(aiImg.dataset.alertB64);
             setDebugLabel("alert（打瞌睡警報）");
         } else if (currentCompanionMode === 1) {
-            // 🎭 模式一：待機時從「小動作池」隨機抽段穿插（idle/偏頭/飄眼/點頭），偶爾打哈欠。
-            //    只有「時間到了」才重新抽段，並排一個「不規律」的等待時間 → 不再死板重播同一段。
+            // 🎭 模式一：平常安靜「發呆」佔大多數時間；偶爾插一個「只做一次」的小動作；哈欠很稀有。
+            //    只有「時間到了」才重新抽段。發呆停留久(12~22秒)，小動作只停約一次的長度就回發呆，
+            //    所以不會像之前那樣一直換、也不會卡在同一個小動作猛做。
             if (Date.now() >= idleNextSwitchAt) {
-                // 20% 機率打哈欠（若有烤出來），其餘從池子隨機抽一段
-                const doYawn = (Math.random() < 0.20) && !!aiImg.dataset.yawnB64;
-                if (doYawn) {
+                const r = Math.random();
+                const canYawn = !!aiImg.dataset.yawnB64 && Date.now() >= yawnCooldownUntil;
+                if (canYawn && r < 0.06) {
+                    // 稀有(約6%)：打一次哈欠，之後 45 秒內不再打
                     idleClipSrc = aiImg.dataset.yawnB64;
                     idleClipLabel = 'yawn（打哈欠）';
-                } else {
-                    const pick = (idlePool.length > 0)
-                        ? idlePool[Math.floor(Math.random() * idlePool.length)]
-                        : { src: aiImg.dataset.idleB64, label: 'idle（發呆）' };
+                    idleNextSwitchAt = Date.now() + 3200;               // 約播一次哈欠就換走
+                    yawnCooldownUntil = Date.now() + 45000;            // 45 秒冷卻
+                } else if (idlePool.length > 0 && r < 0.32) {
+                    // 偶爾(約26%)：插一個小動作(偏頭/飄眼/點頭)，只停約一次的長度就回發呆
+                    const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
                     idleClipSrc = pick.src;
                     idleClipLabel = pick.label;
+                    idleNextSwitchAt = Date.now() + 4200;              // 約一段小動作長度，播一次
+                } else {
+                    // 大多數時間(約68%)：安靜發呆，停留較久 → 這就是你要的「原本的頻率」
+                    idleClipSrc = aiImg.dataset.idleB64;
+                    idleClipLabel = 'idle（發呆）';
+                    idleNextSwitchAt = Date.now() + (12000 + Math.random() * 10000);  // 12~22 秒
                 }
-                // 下一次換段的等待時間（秒）：哈欠短一點(3~5)、其餘(5~12)，隨機 → 不規律
-                const waitSec = doYawn ? (3 + Math.random() * 2) : (5 + Math.random() * 7);
-                idleNextSwitchAt = Date.now() + waitSec * 1000;
             }
             // 依目前抽到的段播放；setAiFrame 對「同一張圖」會自動略過，不會打斷動畫
             setAiFrame(idleClipSrc || aiImg.dataset.idleB64);
