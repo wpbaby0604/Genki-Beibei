@@ -51,6 +51,9 @@ OUTPUT_SIZE = 512               # 統一 resize 成 512x512，跟現有前端的
 # ---- 跟 bake_avatar.py 完全相同的時間軸設定，讓兩邊烤出來的動畫長度一致 ----
 ACTION_FRAMES = {
     "idle":         (50, 110),
+    "idle_tilt":    (40, 110),   # 🌟 新增：偏頭一下（一去一回）
+    "idle_glance":  (36, 110),   # 🌟 新增：視線飄一下（眼睛動、頭幾乎不動）
+    "idle_nod":     (32, 110),   # 🌟 新增：微微點頭
     "yawn":         (28, 110),
     "alert":        (40, 120),
     "talk_neutral": (24, 90),
@@ -151,6 +154,31 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
                 close_amount = max(0.0, 1.0 - d / 3.0) ** 1.5
                 p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, close_amount)
                 break   # 這一幀已落在某次眨眼範圍內，不需再檢查其他時間點
+
+    elif action == "idle_tilt":
+        # 偏頭一下：頭慢慢歪向一側再回正。用半個 sin（0→1→0）確保「起點=終點=正臉」，
+        # 這樣任何一段接在別段前後都不會跳臉，方便前端隨機穿插。
+        c = math.sin(math.pi * t)                          # 0 → 1 → 0，一去一回
+        p["input_head_roll_variation"] = 6.0 * c           # 最多歪 6 度
+        p["input_head_yaw_variation"] = 3.0 * c            # 順帶一點點轉向，更自然
+        p["input_head_pitch_variation"] = 1.0 * math.sin(2 * math.pi * t)  # 保留呼吸微晃
+        if abs(i - int(n * 0.5)) <= 2:                     # 中段輕眨一下，避免死盯
+            p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, 1.0 - abs(i - int(n * 0.5)) / 3.0)
+
+    elif action == "idle_glance":
+        # 視線飄一下：眼睛看向一側再收回，頭幾乎不動。眼睛會動＝很有生命感。
+        c = math.sin(math.pi * t)
+        p["eyeball_direction_x"] = 0.6 * c                 # 眼球往一側看（幅度待烤出來再校，見檔頭說明）
+        p["input_head_yaw_variation"] = 1.2 * math.sin(2 * math.pi * t)    # 頭只有極輕微晃
+        p["input_head_pitch_variation"] = 1.0 * math.sin(2 * math.pi * t)  # 呼吸
+
+    elif action == "idle_nod":
+        # 微微點頭：頭往下點一下再回來。
+        c = math.sin(math.pi * t)
+        p["input_head_pitch_variation"] = -4.0 * c         # 負=低頭，最多點 4 度
+        p["input_head_yaw_variation"] = 1.0 * math.sin(2 * math.pi * t)    # 一點點左右晃
+        if abs(i - int(n * 0.5)) <= 2:                     # 點到最低時順勢眨一下
+            p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, 1.0 - abs(i - int(n * 0.5)) / 3.0)
 
     elif action == "yawn":
         c = math.sin(math.pi * t)
@@ -307,7 +335,8 @@ def bake_payload(pipeline, photo_path: str, scale: float = 2.3, log=print) -> di
     log(f"  預設眼睛開合度={src_eye_ratio}, 嘴巴開合度={src_lip_ratio}")
 
     clips = {}
-    actions = ["idle", "yawn", "alert", "talk_neutral", "talk_happy", "talk_sad", "talk_angry"]
+    actions = ["idle", "idle_tilt", "idle_glance", "idle_nod",
+               "yawn", "alert", "talk_neutral", "talk_happy", "talk_sad", "talk_angry"]
     for idx, a in enumerate(actions, 1):
         log(f"  [{idx}/{len(actions)}] 烤製動作：{a} …")
         clips[a] = _bake_clip(pipeline, photo_path, src_eye_ratio, src_lip_ratio, a, scale)
