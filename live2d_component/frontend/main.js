@@ -30,6 +30,13 @@ let drowsyStartTime = null;
 const DROWSY_THRESHOLD = 0.2; // 閉眼判定標準 (跟妳 Python 端一樣)
 const DROWSY_TIME_LIMIT = 3000; // 閉眼超過 3 秒 (3000毫秒) 就叫醒
 
+// 🌟 待機時的「隨機穿插」排程：記住現在該播哪一段、以及下一次該換段的時間點。
+//    目的：不再死板板重播 idle，而是「發呆 → 偏頭 → 飄眼 → 點頭 → 打哈欠…」隨機接，間隔不規律。
+let idleNextSwitchAt = 0;               // 下一次該重新抽段的時間戳 (Date.now() 毫秒)
+let idleClipSrc = null;                 // 目前待機正在播的那段圖 (base64 src)
+let idleClipLabel = 'idle（發呆）';      // 左上角除錯標籤文字
+let idlePool = [];                      // 🌟 可用的待機小動作池：{src,label}[]（idle + 偏頭/飄眼/點頭）
+
 // 🌟 新增：重置沙漏的控制功能
 function resetIdleTimer() {
     if (idleTimeout) clearTimeout(idleTimeout);
@@ -470,6 +477,20 @@ Streamlit.onRender(function(args) {
                 aiImg.dataset.yawnB64 = "data:image/webp;base64," + data.yawn;
                 aiImg.dataset.alertB64 = "data:image/webp;base64," + data.alert;
 
+                // 🌟 組「待機小動作池」：一定有 idle；偏頭/飄眼/點頭若這顆頭像有烤才加入。
+                //    舊頭像沒有這些 key（膠水層會回空字串），length===0 就不放進池 → 向下相容。
+                idlePool = [{ src: aiImg.dataset.idleB64, label: 'idle（發呆）' }];
+                const extraIdle = [
+                    [data.idle_tilt,   'idle_tilt（偏頭）'],
+                    [data.idle_glance, 'idle_glance（飄眼）'],
+                    [data.idle_nod,    'idle_nod（點頭）'],
+                ];
+                for (const [b64, label] of extraIdle) {
+                    if (b64 && b64.length > 0) {
+                        idlePool.push({ src: "data:image/webp;base64," + b64, label });
+                    }
+                }
+
                 // 🌟 把角度網格存進全域，交給 onResults 用
                 if (data.grid && data.grid.length > 0) {
                     beibeiGrid = data.grid.map(b => "data:image/webp;base64," + b);
@@ -483,6 +504,7 @@ Streamlit.onRender(function(args) {
                 aiImg.dataset.talkingB64 = "data:image/webp;base64," + args.ai_webp;
                 aiImg.dataset.yawnB64 = "data:image/webp;base64," + args.ai_webp;
                 aiImg.dataset.alertB64 = "data:image/webp;base64," + args.ai_webp;
+                idlePool = [{ src: aiImg.dataset.idleB64, label: 'idle（發呆）' }];  // 單圖時池子只有一段
             }
         } catch(e) { console.log("解析動畫 JSON 失敗", e); }
 
@@ -503,15 +525,28 @@ Streamlit.onRender(function(args) {
             setAiFrame(aiImg.dataset.alertB64);
             setDebugLabel("alert（打瞌睡警報）");
         } else if (currentCompanionMode === 1) {
-            // 🎭 模式一：平常安靜發呆（閉嘴呼吸），約每 25 秒才可能打一次哈欠
-            let timeSec = Math.floor(Date.now() / 1000);
-            if (timeSec % 25 === 0 && Math.random() < 0.5 && aiImg.dataset.yawnB64) {
-                setAiFrame(aiImg.dataset.yawnB64);
-                setDebugLabel("yawn（打哈欠）");
-            } else {
-                setAiFrame(aiImg.dataset.idleB64);
-                setDebugLabel("idle（發呆）");
+            // 🎭 模式一：待機時從「小動作池」隨機抽段穿插（idle/偏頭/飄眼/點頭），偶爾打哈欠。
+            //    只有「時間到了」才重新抽段，並排一個「不規律」的等待時間 → 不再死板重播同一段。
+            if (Date.now() >= idleNextSwitchAt) {
+                // 20% 機率打哈欠（若有烤出來），其餘從池子隨機抽一段
+                const doYawn = (Math.random() < 0.20) && !!aiImg.dataset.yawnB64;
+                if (doYawn) {
+                    idleClipSrc = aiImg.dataset.yawnB64;
+                    idleClipLabel = 'yawn（打哈欠）';
+                } else {
+                    const pick = (idlePool.length > 0)
+                        ? idlePool[Math.floor(Math.random() * idlePool.length)]
+                        : { src: aiImg.dataset.idleB64, label: 'idle（發呆）' };
+                    idleClipSrc = pick.src;
+                    idleClipLabel = pick.label;
+                }
+                // 下一次換段的等待時間（秒）：哈欠短一點(3~5)、其餘(5~12)，隨機 → 不規律
+                const waitSec = doYawn ? (3 + Math.random() * 2) : (5 + Math.random() * 7);
+                idleNextSwitchAt = Date.now() + waitSec * 1000;
             }
+            // 依目前抽到的段播放；setAiFrame 對「同一張圖」會自動略過，不會打斷動畫
+            setAiFrame(idleClipSrc || aiImg.dataset.idleB64);
+            setDebugLabel(idleClipLabel);
         } else if (currentCompanionMode === 2 && beibeiGrid.length > 0) {
             // 🪞 模式二：跟臉！這裡先放正中央那張避免空白，
             //            真正的即時換圖交給 onResults 每幀去做
