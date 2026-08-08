@@ -36,6 +36,8 @@ let idleClipSrc = null;                 // 目前待機正在播的那段圖 (ba
 let idleClipLabel = 'idle（發呆）';      // 左上角除錯標籤文字
 let idlePool = [];                      // 🌟 只放「偶爾的小動作」：偏頭/飄眼/點頭（不含平常的 idle）
 let yawnCooldownUntil = 0;              // 🌟 打完哈欠後，這個時間點之前不再打（避免狂打哈欠）
+let forcedAction = "";                  // 🔧 除錯：被強制顯示的表情/動作（""＝正常自動）
+let clipMap = {};                       // 🔧 動作名稱 → base64 src 的對照表，給強制顯示查用
 
 // 🌟 新增：重置沙漏的控制功能
 function resetIdleTimer() {
@@ -296,7 +298,7 @@ faceMesh.onResults((results) => {
         if (aiImg && aiImg.style.display !== 'none') {
             const speaking = (currentPlayingAudio && !currentPlayingAudio.paused);
             const drowsy = (drowsyStartTime && Date.now() - drowsyStartTime > DROWSY_TIME_LIMIT);
-            if (!speaking && !drowsy) {   // 說話/打瞌睡動畫優先，其餘時間才跟臉
+            if (!speaking && !drowsy && !forcedAction) {   // 說話/打瞌睡/除錯強制優先，其餘時間才跟臉
                 const src = beibeiGrid[faceAngleToGridIndex(smoothFaceAngleX, smoothFaceAngleY)];
                 setAiFrame(src);
             }
@@ -491,6 +493,17 @@ Streamlit.onRender(function(args) {
                     }
                 }
 
+                // 🔧 組「動作名稱 → 圖」對照表，給側邊欄的「強制表情/動作」查用。
+                clipMap = {
+                    idle:    aiImg.dataset.idleB64,
+                    talking: aiImg.dataset.talkingB64,   // ＝目前情緒對應的說話表情
+                    yawn:    aiImg.dataset.yawnB64,
+                    alert:   aiImg.dataset.alertB64,
+                };
+                if (data.idle_tilt && data.idle_tilt.length)     clipMap.idle_tilt   = "data:image/webp;base64," + data.idle_tilt;
+                if (data.idle_glance && data.idle_glance.length) clipMap.idle_glance = "data:image/webp;base64," + data.idle_glance;
+                if (data.idle_nod && data.idle_nod.length)       clipMap.idle_nod    = "data:image/webp;base64," + data.idle_nod;
+
                 // 🌟 把角度網格存進全域，交給 onResults 用
                 if (data.grid && data.grid.length > 0) {
                     beibeiGrid = data.grid.map(b => "data:image/webp;base64," + b);
@@ -505,18 +518,30 @@ Streamlit.onRender(function(args) {
                 aiImg.dataset.yawnB64 = "data:image/webp;base64," + args.ai_webp;
                 aiImg.dataset.alertB64 = "data:image/webp;base64," + args.ai_webp;
                 idlePool = [];  // 單圖時沒有小動作，平常就是那張 idle
+                clipMap = {     // 🔧 單圖時所有動作都指向同一張
+                    idle:    aiImg.dataset.idleB64,
+                    talking: aiImg.dataset.talkingB64,
+                    yawn:    aiImg.dataset.yawnB64,
+                    alert:   aiImg.dataset.alertB64,
+                };
             }
         } catch(e) { console.log("解析動畫 JSON 失敗", e); }
 
  // 🌟 同步目前模式給 onResults 用（新增這行）
         currentCompanionMode = (typeof args.companion_mode !== 'undefined') ? args.companion_mode : 1;
         currentEmotionLabel = (typeof args.emotion !== 'undefined' && args.emotion) ? args.emotion : "neutral";
+        // 🔧 除錯：被強制顯示的表情/動作（""＝正常）。給 onResults 也讀得到，所以存全域。
+        forcedAction = (typeof args.forced_action !== 'undefined' && args.forced_action) ? args.forced_action : "";
 
         // 🌟 狀態機切換邏輯
         let isSpeaking = (currentPlayingAudio && !currentPlayingAudio.paused);
         let isDrowsyAlert = (drowsyStartTime && Date.now() - drowsyStartTime > DROWSY_TIME_LIMIT);
 
-        if (isSpeaking) {
+        if (forcedAction && clipMap[forcedAction]) {
+            // 🔧 除錯強制：蓋過一切，一直保持這個表情，直到側邊欄選回「無」
+            setAiFrame(clipMap[forcedAction]);
+            setDebugLabel("🔧 強制：" + forcedAction);
+        } else if (isSpeaking) {
             // 講話中：強制動嘴巴
             setAiFrame(aiImg.dataset.talkingB64);
             setDebugLabel("talk_" + currentEmotionLabel);
