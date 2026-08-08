@@ -283,6 +283,11 @@ def build_ai_webp(baked: dict, emotion: str = "neutral") -> str:
     talking_key = {"happy": "talk_happy", "sad": "talk_sad", "angry": "talk_angry"}.get(emotion, "talk_neutral")
     return json.dumps({
         "idle":    clips.get("idle", ""),
+        # 🌟 新增：三段待機小動作，讓前端隨機穿插用。舊頭像沒有這些 key，
+        #    clips.get(..., "") 會回空字串，前端會自動略過（見 main.js 的池子過濾），所以向下相容。
+        "idle_tilt":   clips.get("idle_tilt", ""),
+        "idle_glance": clips.get("idle_glance", ""),
+        "idle_nod":    clips.get("idle_nod", ""),
         "talking": clips.get(talking_key, clips.get("talk_neutral", "")),
         "yawn":    clips.get("yawn", ""),
         "alert":   clips.get("alert", ""),
