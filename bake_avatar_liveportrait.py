@@ -34,6 +34,7 @@ import sys
 import json
 import math
 import base64
+import random
 import argparse
 
 try:
@@ -57,6 +58,15 @@ ACTION_FRAMES = {
     "talk_sad":     (24, 90),
     "talk_angry":   (24, 90),
 }
+
+# ---- idle 眨眼時間點：改成「一輪內眨好幾次、間隔不規律」，取代原本固定 82% 只眨一次 ----
+# 固定種子：每次烤製都得到同一組時間點，讓結果可重現（論文要求可複現）。
+_IDLE_RNG = random.Random(20240604)
+# 用分數(0~1)表示一輪內的眨眼位置，刻意用不規律間隔避免「每輪同一點眨眼」的時鐘感。
+_IDLE_BLINK_CENTERS = sorted(
+    min(0.95, max(0.05, base + _IDLE_RNG.uniform(-0.04, 0.04)))
+    for base in (0.22, 0.55, 0.83)
+)
 
 GRID_DIM = 11             # 從 7 加大到 11：格子切更細，每格角度差變小，跳格子的頓挫感會降低
                           # （代價：網格從 49 張變 121 張，烤製時間變長、json 檔案變大）
@@ -130,12 +140,17 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
         # 呼吸/頭部微晃：用小幅度 pitch/yaw sin 波近似 THA3 的 breathing+sway
         p["input_head_pitch_variation"] = 1.2 * math.sin(2 * math.pi * t)
         p["input_head_yaw_variation"] = 2.0 * math.sin(2 * math.pi * t + 1.0)
-        # 眨眼：在週期 82% 附近眨一下（跟 THA3 的 center=int(n*0.82) 邏輯一致）
-        center = int(n * 0.82)
-        d = abs(i - center)
-        if d <= 2:
-            close_amount = max(0.0, 1.0 - d / 3.0) ** 1.5
-            p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, close_amount)
+        # 眨眼：改成「一輪內在數個不規律時間點各眨一下」，取代原本固定在 82% 只眨一次。
+        # 原因：原本每一輪都在同一點眨眼，太準、像時鐘，是迴圈最容易被看穿的破綻。
+        # 註：這段 clip 本身仍會重播（巨觀迴圈還在），完全打散要靠前端多段隨機接；
+        #     這一步先解掉「眨眼像節拍器」這個最刺眼的線索。
+        for center_frac in _IDLE_BLINK_CENTERS:
+            center = int(n * center_frac)
+            d = abs(i - center)
+            if d <= 2:
+                close_amount = max(0.0, 1.0 - d / 3.0) ** 1.5
+                p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, close_amount)
+                break   # 這一幀已落在某次眨眼範圍內，不需再檢查其他時間點
 
     elif action == "yawn":
         c = math.sin(math.pi * t)
