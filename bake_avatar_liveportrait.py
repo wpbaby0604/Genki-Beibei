@@ -162,15 +162,15 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
     elif action == "idle_glance":
         # 視線飄一下：眼睛看向一側再收回，頭幾乎不動。眼睛會動＝很有生命感。
         c = math.sin(math.pi * t)
-        p["eyeball_direction_x"] = 0.6 * c                 # 眼球往一側看（幅度待烤出來再校，見檔頭說明）
-        p["input_head_yaw_variation"] = 1.2 * math.sin(2 * math.pi * t)    # 頭只有極輕微晃
+        p["eyeball_direction_x"] = 12.0 * c                # 眼球往一側看：0.6 幾乎看不到，大幅拉高到 12（範圍約 ±15，待實測微調）
+        p["input_head_yaw_variation"] = 0.5 * math.sin(2 * math.pi * t)    # 頭幾乎不動，讓「眼睛動」當主角
         p["input_head_pitch_variation"] = 1.0 * math.sin(2 * math.pi * t)  # 呼吸
 
     elif action == "idle_nod":
-        # 微微點頭：頭往下點一下再回來。
+        # 微微點頭：頭往下點一下再回來。上下幅度加大、左右晃減小。
         c = math.sin(math.pi * t)
-        p["input_head_pitch_variation"] = -4.0 * c         # 負=低頭，最多點 4 度
-        p["input_head_yaw_variation"] = 1.0 * math.sin(2 * math.pi * t)    # 一點點左右晃
+        p["input_head_pitch_variation"] = -8.0 * c         # 負=低頭，上下點頭幅度加大(原本 -4)
+        p["input_head_yaw_variation"] = 0.3 * math.sin(2 * math.pi * t)    # 左右晃減小(原本 1.0)
         if abs(i - int(n * 0.5)) <= 2:                     # 點到最低時順勢眨一下
             p["input_eye_ratio"] = _lerp(source_eye_ratio, 0.03, 1.0 - abs(i - int(n * 0.5)) / 3.0)
 
