@@ -526,6 +526,7 @@ Streamlit.onRender(function(args) {
                 };
                 if (data.idle_tilt && data.idle_tilt.length)     clipMap.idle_tilt   = "data:image/webp;base64," + data.idle_tilt;
                 if (data.idle_glance && data.idle_glance.length) clipMap.idle_glance = "data:image/webp;base64," + data.idle_glance;
+                if (data.idle_glance2 && data.idle_glance2.length) clipMap.idle_glance2 = "data:image/webp;base64," + data.idle_glance2;
                 if (data.idle_nod && data.idle_nod.length)       clipMap.idle_nod    = "data:image/webp;base64," + data.idle_nod;
 
                 // 🌟 把角度網格存進全域，交給 onResults 用
