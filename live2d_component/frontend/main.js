@@ -36,6 +36,16 @@ let idleClipSrc = null;                 // 目前待機正在播的那段圖 (ba
 let idleClipLabel = 'idle（發呆）';      // 左上角除錯標籤文字
 let idlePool = [];                      // 🌟 只放「偶爾的小動作」：偏頭/飄眼/點頭（不含平常的 idle）
 let yawnCooldownUntil = 0;              // 🌟 打完哈欠後，這個時間點之前不再打（避免狂打哈欠）
+
+// 🌟 待機小動作的「次數控制」設定
+//    ms = 該段 clip 長度(毫秒) = 幀數 × 每幀毫秒，必須對齊 bake 腳本的 ACTION_FRAMES！
+//    min/max = 這個動作一次要重複幾次(隨機落在範圍內)，播完該次數就換回發呆。
+const IDLE_MOTION_CFG = {
+    idle_tilt:   { ms: 40 * 110, min: 1, max: 2 },  // 偏頭 1~2 次
+    idle_glance: { ms: 36 * 110, min: 1, max: 2 },  // 飄眼 1~2 次
+    idle_nod:    { ms: 32 * 110, min: 1, max: 2 },  // 點頭 1~2 次
+};
+const YAWN_MS = 28 * 110;               // 哈欠 clip 長度；固定只播 1 次
 let forcedAction = "";                  // 🔧 除錯：被強制顯示的表情/動作（""＝正常自動）
 let clipMap = {};                       // 🔧 動作名稱 → base64 src 的對照表，給強制顯示查用
 
@@ -483,13 +493,17 @@ Streamlit.onRender(function(args) {
                 //    舊頭像沒有這些 key（膠水層會回空字串），length===0 就不放 → 向下相容。
                 idlePool = [];
                 const extraIdle = [
-                    [data.idle_tilt,   'idle_tilt（偏頭）'],
-                    [data.idle_glance, 'idle_glance（飄眼）'],
-                    [data.idle_nod,    'idle_nod（點頭）'],
+                    ['idle_tilt',   data.idle_tilt,   'idle_tilt（偏頭）'],
+                    ['idle_glance', data.idle_glance, 'idle_glance（飄眼）'],
+                    ['idle_nod',    data.idle_nod,    'idle_nod（點頭）'],
                 ];
-                for (const [b64, label] of extraIdle) {
+                for (const [key, b64, label] of extraIdle) {
                     if (b64 && b64.length > 0) {
-                        idlePool.push({ src: "data:image/webp;base64," + b64, label });
+                        const cfg = IDLE_MOTION_CFG[key];
+                        idlePool.push({
+                            src: "data:image/webp;base64," + b64, label, key,
+                            ms: cfg.ms, min: cfg.min, max: cfg.max,
+                        });
                     }
                 }
 
@@ -557,17 +571,18 @@ Streamlit.onRender(function(args) {
                 const r = Math.random();
                 const canYawn = !!aiImg.dataset.yawnB64 && Date.now() >= yawnCooldownUntil;
                 if (canYawn && r < 0.06) {
-                    // 稀有(約6%)：打一次哈欠，之後 45 秒內不再打
+                    // 稀有(約6%)：打哈欠，固定只播 1 次(clip 長度)，之後 45 秒內不再打
                     idleClipSrc = aiImg.dataset.yawnB64;
-                    idleClipLabel = 'yawn（打哈欠）';
-                    idleNextSwitchAt = Date.now() + 3200;               // 約播一次哈欠就換走
+                    idleClipLabel = 'yawn（打哈欠 ×1）';
+                    idleNextSwitchAt = Date.now() + YAWN_MS + 150;     // 播完 1 次就換走
                     yawnCooldownUntil = Date.now() + 45000;            // 45 秒冷卻
                 } else if (idlePool.length > 0 && r < 0.32) {
-                    // 偶爾(約26%)：插一個小動作(偏頭/飄眼/點頭)，只停約一次的長度就回發呆
+                    // 偶爾(約26%)：插一個小動作(偏頭/飄眼/點頭)，重複「該動作設定的隨機次數」就回發呆
                     const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
+                    const times = pick.min + Math.floor(Math.random() * (pick.max - pick.min + 1));
                     idleClipSrc = pick.src;
-                    idleClipLabel = pick.label;
-                    idleNextSwitchAt = Date.now() + 4200;              // 約一段小動作長度，播一次
+                    idleClipLabel = pick.label + ' ×' + times;
+                    idleNextSwitchAt = Date.now() + pick.ms * times + 120;  // 長度×次數，播完就換
                 } else {
                     // 大多數時間(約68%)：安靜發呆，停留較久 → 這就是你要的「原本的頻率」
                     idleClipSrc = aiImg.dataset.idleB64;
