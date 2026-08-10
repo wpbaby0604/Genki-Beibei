@@ -52,6 +52,7 @@ ACTION_FRAMES = {
     "idle":         (50, 110),
     "idle_tilt":    (40, 110),   # 🌟 新增：偏頭一下（一去一回）
     "idle_glance":  (36, 110),   # 🌟 新增：視線飄一下（眼睛動、頭幾乎不動）
+    "idle_glance2": (36, 110),   # 🌟 新增：飄眼(另一側)，前端隨機挑左/右
     "idle_nod":     (32, 110),   # 🌟 新增：微微點頭
     "yawn":         (28, 110),
     "alert":        (40, 120),
@@ -94,13 +95,13 @@ def _apply_expression_overlay(params, expr):
         params["eyebrow"] = 22.0                  # 固定大幅上揚（不再被 sin 稀釋）
         params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.25, 0.85)  # 眼睛睜大有神
     elif expr == "sad":
-        # 真正的難過：眉毛內側『上揚』(擔憂/委屈的內八字感) + 嘴角明顯下垂 + 上眼皮下垂，臉朝正前方。
-        # 註：舊版是 eyebrow 負值(往下壓)，那其實接近生氣，會被讀成「臭臉/不耐煩」——已改為正值上揚。
-        params["smile"] = -0.6                      # 嘴角明顯下垂(比舊版更強)
-        params["eyebrow"] = 8.0                     # 眉毛小幅『上揚』→ 擔憂/委屈(不再往下壓成臭臉)
-        params["input_eye_ratio"] *= 0.55           # 上眼皮下垂、眼神無力
-        params["input_head_pitch_variation"] = 0.0      # 臉朝正前方(不低頭)
-        params["input_head_roll_variation"] = 0.0       # 收回正、不歪頭(修掉臉偏左的問題)
+        # 逼近「難過 emoji」的神韻：嘴角垂到最大 + 微低頭(用姿態補悲傷) + 眉毛小幅上揚(擔憂)。
+        # 註：單一 eyebrow 參數做不出「內側上揚、外側下垂」的八字眉，只能盡量逼近，靠嘴+姿態補。
+        params["smile"] = -1.3                      # 嘴角垂到最大(對稱於 happy 的 +1.3)
+        params["eyebrow"] = 5.0                     # 眉毛小幅上揚→擔憂感(避免抬太多變驚訝)
+        params["input_eye_ratio"] *= 0.78           # 眼睛微垂但保持圓睜(像 emoji 的無辜眼)
+        params["input_head_pitch_variation"] = -4.0     # 微低頭，用姿態補悲傷的委屈感
+        params["input_head_roll_variation"] = 0.0       # 不歪頭、臉朝正前方
     elif expr == "angry":
         # angry 的辨識度靠「強皺眉 + 銳利的瞪視 + 抿嘴」。
         # 關鍵：眼睛不再縮小，而是維持正常/略大，做出「瞪」的銳利感，
@@ -165,6 +166,13 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
         p["eyeball_direction_x"] = 12.0 * c                # 眼球往一側看：0.6 幾乎看不到，大幅拉高到 12（範圍約 ±15，待實測微調）
         p["input_head_yaw_variation"] = 0.5 * math.sin(2 * math.pi * t)    # 頭幾乎不動，讓「眼睛動」當主角
         p["input_head_pitch_variation"] = 1.0 * math.sin(2 * math.pi * t)  # 呼吸
+
+    elif action == "idle_glance2":
+        # 飄眼(另一側)：跟 idle_glance 相同，但眼球往相反方向 → 前端隨機挑左/右，做出「每次不一定」。
+        c = math.sin(math.pi * t)
+        p["eyeball_direction_x"] = -12.0 * c               # 往相反側看
+        p["input_head_yaw_variation"] = -0.5 * math.sin(2 * math.pi * t)
+        p["input_head_pitch_variation"] = 1.0 * math.sin(2 * math.pi * t)
 
     elif action == "idle_nod":
         # 微微點頭：頭往下點一下再回來。上下幅度加大、左右晃減小。
@@ -331,7 +339,7 @@ def bake_payload(pipeline, photo_path: str, scale: float = 2.3, log=print) -> di
     log(f"  預設眼睛開合度={src_eye_ratio}, 嘴巴開合度={src_lip_ratio}")
 
     clips = {}
-    actions = ["idle", "idle_tilt", "idle_glance", "idle_nod",
+    actions = ["idle", "idle_tilt", "idle_glance", "idle_glance2", "idle_nod",
                "yawn", "alert", "talk_neutral", "talk_happy", "talk_sad", "talk_angry", "talk_grimace"]
     for idx, a in enumerate(actions, 1):
         log(f"  [{idx}/{len(actions)}] 烤製動作：{a} …")
