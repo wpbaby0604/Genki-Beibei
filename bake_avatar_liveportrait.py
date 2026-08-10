@@ -59,6 +59,7 @@ ACTION_FRAMES = {
     "talk_happy":   (24, 90),
     "talk_sad":     (24, 90),
     "talk_angry":   (24, 90),
+    "talk_grimace": (24, 90),
 }
 
 # ---- idle 眨眼時間點：一輪在 82% 附近眨一次（原始頻率）----
@@ -93,14 +94,13 @@ def _apply_expression_overlay(params, expr):
         params["eyebrow"] = 22.0                  # 固定大幅上揚（不再被 sin 稀釋）
         params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.25, 0.85)  # 眼睛睜大有神
     elif expr == "sad":
-        # sad 的辨識度靠「下垂眼 + 低頭 + 柔化的眉毛」，跟 angry 的銳利瞪視拉開。
-        # 眉毛不再往下限壓（那會變成臭臉/生氣），而是收到小幅負值，
-        # 讓整體讀起來是「無力/委屈」而非「不爽」。
-        params["smile"] = -0.3                    # 明顯嘴角下垂
-        params["eyebrow"] = -10.0                 # 柔化：只小幅八字，不跟 angry 搶皺眉
-        params["input_head_pitch_variation"] = -9.0   # 更明顯低頭，做出垂頭喪氣
-        params["input_head_roll_variation"] = -3.0    # 頭微歪，加強無力感
-        params["input_eye_ratio"] *= 0.5          # 眼睛半垂、沒精神（比 angry 更小）
+        # 真正的難過：眉毛內側『上揚』(擔憂/委屈的內八字感) + 嘴角明顯下垂 + 上眼皮下垂，臉朝正前方。
+        # 註：舊版是 eyebrow 負值(往下壓)，那其實接近生氣，會被讀成「臭臉/不耐煩」——已改為正值上揚。
+        params["smile"] = -0.6                      # 嘴角明顯下垂(比舊版更強)
+        params["eyebrow"] = 8.0                     # 眉毛小幅『上揚』→ 擔憂/委屈(不再往下壓成臭臉)
+        params["input_eye_ratio"] *= 0.55           # 上眼皮下垂、眼神無力
+        params["input_head_pitch_variation"] = 0.0      # 臉朝正前方(不低頭)
+        params["input_head_roll_variation"] = 0.0       # 收回正、不歪頭(修掉臉偏左的問題)
     elif expr == "angry":
         # angry 的辨識度靠「強皺眉 + 銳利的瞪視 + 抿嘴」。
         # 關鍵：眼睛不再縮小，而是維持正常/略大，做出「瞪」的銳利感，
@@ -110,6 +110,13 @@ def _apply_expression_overlay(params, expr):
         params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.1, 0.8)  # 正常/略大＝瞪視
         params["input_head_pitch_variation"] = 2.0    # 略抬下巴，帶挑釁感（與 sad 低頭相反）
         params["lip_variation_two"] = params.get("lip_variation_two", 0.0) + 10.0  # 抿嘴/咬牙
+    elif expr == "grimace":
+        # 臭臉／不耐煩：沿用舊版 sad 的參數(微皺眉 + 平嘴 + 垂眼)，但頭部收回正、不歪頭。
+        params["smile"] = -0.3                      # 嘴角微下垂/平
+        params["eyebrow"] = -10.0                   # 小幅皺眉(往下壓) → 臭臉感
+        params["input_eye_ratio"] *= 0.5            # 眼睛半垂
+        params["input_head_pitch_variation"] = 0.0      # 臉朝正前方
+        params["input_head_roll_variation"] = 0.0       # 不歪頭
     return params
 
 
@@ -195,6 +202,8 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
             _apply_expression_overlay(p, "sad")
         elif action == "talk_angry":
             _apply_expression_overlay(p, "angry")
+        elif action == "talk_grimace":
+            _apply_expression_overlay(p, "grimace")
 
         # 第 0 幀強制閉嘴：這一幀是「表情總覽」抓來當代表的畫面，
         # 閉嘴才能讓嘴角的笑/垂、眉毛的情緒清楚呈現，不會被說話張大的嘴蓋掉。
@@ -323,7 +332,7 @@ def bake_payload(pipeline, photo_path: str, scale: float = 2.3, log=print) -> di
 
     clips = {}
     actions = ["idle", "idle_tilt", "idle_glance", "idle_nod",
-               "yawn", "alert", "talk_neutral", "talk_happy", "talk_sad", "talk_angry"]
+               "yawn", "alert", "talk_neutral", "talk_happy", "talk_sad", "talk_angry", "talk_grimace"]
     for idx, a in enumerate(actions, 1):
         log(f"  [{idx}/{len(actions)}] 烤製動作：{a} …")
         clips[a] = _bake_clip(pipeline, photo_path, src_eye_ratio, src_lip_ratio, a, scale)
