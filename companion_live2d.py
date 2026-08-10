@@ -287,6 +287,7 @@ def build_ai_webp(baked: dict, emotion: str = "neutral") -> str:
         #    clips.get(..., "") 會回空字串，前端會自動略過（見 main.js 的池子過濾），所以向下相容。
         "idle_tilt":   clips.get("idle_tilt", ""),
         "idle_glance": clips.get("idle_glance", ""),
+        "idle_glance2": clips.get("idle_glance2", ""),
         "idle_nod":    clips.get("idle_nod", ""),
         "talking": clips.get(talking_key, clips.get("talk_neutral", "")),
         "yawn":    clips.get("yawn", ""),
