@@ -492,19 +492,29 @@ Streamlit.onRender(function(args) {
                 // 🌟 組「小動作池」：只放偏頭/飄眼/點頭（平常的 idle 不放進來，另外處理）。
                 //    舊頭像沒有這些 key（膠水層會回空字串），length===0 就不放 → 向下相容。
                 idlePool = [];
-                const extraIdle = [
-                    ['idle_tilt',   data.idle_tilt,   'idle_tilt（偏頭）'],
-                    ['idle_glance', data.idle_glance, 'idle_glance（飄眼）'],
-                    ['idle_nod',    data.idle_nod,    'idle_nod（點頭）'],
-                ];
-                for (const [key, b64, label] of extraIdle) {
+                // 偏頭、點頭：各一支
+                for (const [key, b64, label] of [
+                    ['idle_tilt', data.idle_tilt, 'idle_tilt（偏頭）'],
+                    ['idle_nod',  data.idle_nod,  'idle_nod（點頭）'],
+                ]) {
                     if (b64 && b64.length > 0) {
                         const cfg = IDLE_MOTION_CFG[key];
                         idlePool.push({
-                            src: "data:image/webp;base64," + b64, label, key,
+                            srcs: ["data:image/webp;base64," + b64], label, key,
                             ms: cfg.ms, min: cfg.min, max: cfg.max,
                         });
                     }
+                }
+                // 飄眼：在池子裡佔「一格」，但握有左/右兩支，每次隨機挑一支 → 每次不一定往哪邊飄。
+                const glanceSrcs = [];
+                if (data.idle_glance  && data.idle_glance.length)  glanceSrcs.push("data:image/webp;base64," + data.idle_glance);
+                if (data.idle_glance2 && data.idle_glance2.length) glanceSrcs.push("data:image/webp;base64," + data.idle_glance2);
+                if (glanceSrcs.length > 0) {
+                    const cfg = IDLE_MOTION_CFG['idle_glance'];
+                    idlePool.push({
+                        srcs: glanceSrcs, label: 'idle_glance（飄眼）', key: 'idle_glance',
+                        ms: cfg.ms, min: cfg.min, max: cfg.max,
+                    });
                 }
 
                 // 🔧 組「動作名稱 → 圖」對照表，給側邊欄的「強制表情/動作」查用。
@@ -580,7 +590,7 @@ Streamlit.onRender(function(args) {
                     // 偶爾(約26%)：插一個小動作(偏頭/飄眼/點頭)，重複「該動作設定的隨機次數」就回發呆
                     const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
                     const times = pick.min + Math.floor(Math.random() * (pick.max - pick.min + 1));
-                    idleClipSrc = pick.src;
+                    idleClipSrc = pick.srcs[Math.floor(Math.random() * pick.srcs.length)];  // 飄眼會隨機挑左/右
                     idleClipLabel = pick.label + ' ×' + times;
                     idleNextSwitchAt = Date.now() + pick.ms * times + 120;  // 長度×次數，播完就換
                 } else {
