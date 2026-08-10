@@ -280,7 +280,7 @@ def build_ai_webp(baked: dict, emotion: str = "neutral") -> str:
     """把預烤資料組成前端 ai_webp 要的 JSON 字串（依情緒挑說話版）。
     與本地 run_tha3_animation 的輸出格式完全一致。"""
     clips = baked.get("clips", {})
-    talking_key = {"happy": "talk_happy", "sad": "talk_sad", "angry": "talk_angry"}.get(emotion, "talk_neutral")
+    talking_key = {"happy": "talk_happy", "sad": "talk_sad", "angry": "talk_angry", "grimace": "talk_grimace"}.get(emotion, "talk_neutral")
     return json.dumps({
         "idle":    clips.get("idle", ""),
         # 🌟 新增：三段待機小動作，讓前端隨機穿插用。舊頭像沒有這些 key，
@@ -653,6 +653,7 @@ def show_companion() -> None:
         "talk_happy（說話-開心）":   ("talking", "happy"),
         "talk_sad（說話-難過）":     ("talking", "sad"),
         "talk_angry（說話-生氣）":   ("talking", "angry"),
+        "talk_grimace（臭臉）":       ("talking", "grimace"),
     }
     with st.sidebar.expander("🔧 除錯：強制表情/動作", expanded=False):
         _debug_pick = st.selectbox(
