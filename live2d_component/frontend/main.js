@@ -347,6 +347,48 @@ const camera = new Camera(videoElement, {
 camera.start();
 
 // ==========================================
+// ==========================================
+// 🌟 待機排程：抽成獨立函式，並用 setInterval 每 0.4 秒持續驅動。
+//    原因：待機切換原本只寫在 onRender 裡，而 onRender 只有 Streamlit rerun 時才觸發，
+//    使用者不互動時就很久不跑一次 → 待機會「一直卡在發呆、不切換」。改用計時器就會持續切換。
+// ==========================================
+function runIdleScheduler() {
+    const aiImg = document.getElementById('ai_beibei_img');
+    if (!aiImg || aiImg.style.display === 'none') return;
+    if (currentCompanionMode !== 1) return;              // 只管模式一待機
+    if (forcedAction) return;                            // 除錯強制時不插手
+    const speaking = (currentPlayingAudio && !currentPlayingAudio.paused);
+    const drowsy = (drowsyStartTime && Date.now() - drowsyStartTime > DROWSY_TIME_LIMIT);
+    if (speaking || drowsy) return;                      // 講話 / 打瞌睡優先，不插手
+    if (Date.now() >= idleNextSwitchAt) {
+        const r = Math.random();
+        const canYawn = !!aiImg.dataset.yawnB64 && Date.now() >= yawnCooldownUntil;
+        if (canYawn && r < 0.06) {
+            idleClipSrc = aiImg.dataset.yawnB64;
+            idleClipLabel = 'yawn（打哈欠 ×1）';
+            idleNextSwitchAt = Date.now() + YAWN_MS + 150;
+            yawnCooldownUntil = Date.now() + 45000;
+        } else if (idlePool.length > 0 && r < 0.32) {
+            const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
+            const times = pick.min + Math.floor(Math.random() * (pick.max - pick.min + 1));
+            idleClipSrc = pick.srcs[Math.floor(Math.random() * pick.srcs.length)];  // 飄眼會隨機挑左/右
+            idleClipLabel = pick.label + ' ×' + times;
+            idleNextSwitchAt = Date.now() + pick.ms * times + 120;
+        } else {
+            idleClipSrc = aiImg.dataset.idleB64;
+            idleClipLabel = 'idle（發呆）';
+            idleNextSwitchAt = Date.now() + (12000 + Math.random() * 10000);  // 12~22 秒
+        }
+    }
+    setAiFrame(idleClipSrc || aiImg.dataset.idleB64);
+    setDebugLabel(idleClipLabel);
+}
+// 每 0.4 秒驅動一次；用旗標避免元件重載時重複註冊多個計時器。
+if (!window.__beibeiIdleTimer) {
+    window.__beibeiIdleTimer = setInterval(runIdleScheduler, 400);
+}
+
+// ==========================================
 // 4. Streamlit 通訊（正確做法）
 // ==========================================
 // ✅ 修正：使用 Streamlit.onRender() 而非手動 addEventListener
@@ -575,35 +617,9 @@ Streamlit.onRender(function(args) {
             setAiFrame(aiImg.dataset.alertB64);
             setDebugLabel("alert（打瞌睡警報）");
         } else if (currentCompanionMode === 1) {
-            // 🎭 模式一：平常安靜「發呆」佔大多數時間；偶爾插一個「只做一次」的小動作；哈欠很稀有。
-            //    只有「時間到了」才重新抽段。發呆停留久(12~22秒)，小動作只停約一次的長度就回發呆，
-            //    所以不會像之前那樣一直換、也不會卡在同一個小動作猛做。
-            if (Date.now() >= idleNextSwitchAt) {
-                const r = Math.random();
-                const canYawn = !!aiImg.dataset.yawnB64 && Date.now() >= yawnCooldownUntil;
-                if (canYawn && r < 0.06) {
-                    // 稀有(約6%)：打哈欠，固定只播 1 次(clip 長度)，之後 45 秒內不再打
-                    idleClipSrc = aiImg.dataset.yawnB64;
-                    idleClipLabel = 'yawn（打哈欠 ×1）';
-                    idleNextSwitchAt = Date.now() + YAWN_MS + 150;     // 播完 1 次就換走
-                    yawnCooldownUntil = Date.now() + 45000;            // 45 秒冷卻
-                } else if (idlePool.length > 0 && r < 0.32) {
-                    // 偶爾(約26%)：插一個小動作(偏頭/飄眼/點頭)，重複「該動作設定的隨機次數」就回發呆
-                    const pick = idlePool[Math.floor(Math.random() * idlePool.length)];
-                    const times = pick.min + Math.floor(Math.random() * (pick.max - pick.min + 1));
-                    idleClipSrc = pick.srcs[Math.floor(Math.random() * pick.srcs.length)];  // 飄眼會隨機挑左/右
-                    idleClipLabel = pick.label + ' ×' + times;
-                    idleNextSwitchAt = Date.now() + pick.ms * times + 120;  // 長度×次數，播完就換
-                } else {
-                    // 大多數時間(約68%)：安靜發呆，停留較久 → 這就是你要的「原本的頻率」
-                    idleClipSrc = aiImg.dataset.idleB64;
-                    idleClipLabel = 'idle（發呆）';
-                    idleNextSwitchAt = Date.now() + (12000 + Math.random() * 10000);  // 12~22 秒
-                }
-            }
-            // 依目前抽到的段播放；setAiFrame 對「同一張圖」會自動略過，不會打斷動畫
-            setAiFrame(idleClipSrc || aiImg.dataset.idleB64);
-            setDebugLabel(idleClipLabel);
+            // 🎭 模式一：待機。實際切換由持續運作的 runIdleScheduler()(setInterval)驅動；
+            //            這裡也呼叫一次，確保 rerun 當下能即時反映。
+            runIdleScheduler();
         } else if (currentCompanionMode === 2 && beibeiGrid.length > 0) {
             // 🪞 模式二：跟臉！這裡先放正中央那張避免空白，
             //            真正的即時換圖交給 onResults 每幀去做
