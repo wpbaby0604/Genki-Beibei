@@ -219,7 +219,19 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
 
 
 def _to_pil(rgb_uint8_hw3):
-    return Image.fromarray(rgb_uint8_hw3, "RGB").resize((OUTPUT_SIZE, OUTPUT_SIZE))
+    """把 LivePortrait 輸出的畫面轉成 512x512 的 PIL 影像。
+    關鍵：保持原始長寬比（等比例縮放後置中貼上），避免非正方形的輸出
+    被硬壓成正方形而導致臉變扁。不足的邊緣用白色補滿（letterbox）。"""
+    img = Image.fromarray(rgb_uint8_hw3, "RGB")
+    w, h = img.size
+    scale_ratio = OUTPUT_SIZE / max(w, h)
+    new_w, new_h = round(w * scale_ratio), round(h * scale_ratio)
+    img_resized = img.resize((new_w, new_h))
+    canvas = Image.new("RGB", (OUTPUT_SIZE, OUTPUT_SIZE), (255, 255, 255))
+    offset_x = (OUTPUT_SIZE - new_w) // 2
+    offset_y = (OUTPUT_SIZE - new_h) // 2
+    canvas.paste(img_resized, (offset_x, offset_y))
+    return canvas
 
 
 def _bake_clip(pipeline, photo_path, source_eye_ratio, source_lip_ratio, action, scale):
@@ -321,6 +333,13 @@ def bake_payload(pipeline, photo_path: str, scale: float = 2.3, log=print) -> di
         raise FileNotFoundError(f"找不到照片：{photo_path}")
 
     log(f"  來源相片：{photo_path}")
+    try:
+        _probe = Image.open(photo_path)
+        _pw, _ph = _probe.size
+        _orient = "直式（高>寬）" if _ph > _pw else ("橫式（寬>高）" if _pw > _ph else "正方形")
+        log(f"  原始照片尺寸：{_pw}×{_ph}（{_orient}）— 已用保持長寬比的方式處理，臉不會被壓扁")
+    except Exception:
+        pass
     src_eye_ratio, src_lip_ratio = pipeline.init_retargeting_image(
         retargeting_source_scale=scale, source_eye_ratio=0.4, source_lip_ratio=0.0,
         input_image=photo_path,
