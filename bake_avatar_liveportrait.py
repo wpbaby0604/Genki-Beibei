@@ -220,17 +220,19 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
 
 def _to_pil(rgb_uint8_hw3):
     """把 LivePortrait 輸出的畫面轉成 512x512 的 PIL 影像。
-    關鍵：保持原始長寬比（等比例縮放後置中貼上），避免非正方形的輸出
-    被硬壓成正方形而導致臉變扁。不足的邊緣用白色補滿（letterbox）。"""
+    保持原始長寬比（等比例縮放後置中貼上），避免非正方形輸出被壓扁。
+    letterbox 補的那圈邊做成「透明」，讓前端背景能自然透上來
+    （背景換了也永遠正確，不用重烤）。照片本身區域維持不透明。"""
     img = Image.fromarray(rgb_uint8_hw3, "RGB")
     w, h = img.size
     scale_ratio = OUTPUT_SIZE / max(w, h)
     new_w, new_h = round(w * scale_ratio), round(h * scale_ratio)
     img_resized = img.resize((new_w, new_h))
-    canvas = Image.new("RGB", (OUTPUT_SIZE, OUTPUT_SIZE), (255, 255, 255))
+    # 透明畫布（RGBA，alpha=0 全透明），照片貼上去的區域才會變不透明
+    canvas = Image.new("RGBA", (OUTPUT_SIZE, OUTPUT_SIZE), (0, 0, 0, 0))
     offset_x = (OUTPUT_SIZE - new_w) // 2
     offset_y = (OUTPUT_SIZE - new_h) // 2
-    canvas.paste(img_resized, (offset_x, offset_y))
+    canvas.paste(img_resized.convert("RGBA"), (offset_x, offset_y))
     return canvas
 
 
@@ -265,7 +267,7 @@ def _bake_clip(pipeline, photo_path, source_eye_ratio, source_lip_ratio, action,
 
     buf = io.BytesIO()
     frames[0].save(buf, format="WEBP", save_all=True, append_images=frames[1:],
-                    duration=frame_ms, loop=0, quality=85)
+                    duration=frame_ms, loop=0, quality=85, exact=True)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
@@ -294,7 +296,7 @@ def _bake_grid(pipeline, photo_path, source_eye_ratio, source_lip_ratio, scale):
             )
             frame = _to_pil(out_blend)
             fbuf = io.BytesIO()
-            frame.save(fbuf, format="WEBP", quality=80)
+            frame.save(fbuf, format="WEBP", quality=80, exact=True)
             frames_b64.append(base64.b64encode(fbuf.getvalue()).decode("utf-8"))
     return frames_b64
 
