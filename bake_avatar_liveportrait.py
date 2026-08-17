@@ -90,9 +90,12 @@ def _apply_expression_overlay(params, expr):
     而且情緒相關參數（smile/eyebrow/eye）改成「直接設定固定值」而非在 sin 波動上加成，
     避免說話時的頭部/眉毛擺動把情緒稀釋掉。"""
     if expr == "happy":
-        params["smile"] = 1.3                     # 上限，最大燦笑（嘴角明顯上揚）
-        params["eyebrow"] = 22.0                  # 固定大幅上揚（不再被 sin 稀釋）
-        params["input_eye_ratio"] = min(params["input_eye_ratio"] * 1.25, 0.85)  # 眼睛睜大有神
+        params["smile"] = 0.7                      # 從 1.3 降到 0.7：真人臉 1.3 會用力過猛、變成吼叫感，
+                                                   # 0.7 是「帶著笑意」的自然微笑幅度
+        params["eyebrow"] = 12.0                   # 眉毛微微上揚即可（原本 22 太挑，顯得驚訝而非開心）
+        params["input_eye_ratio"] = max(params["input_eye_ratio"] * 0.82, 0.18)  # 眼睛微瞇——
+                                                   # 真人「開心笑」時眼睛是瞇起來的（杜鄉式微笑），不是睜大
+        params["_happy_mouth_damp"] = True         # 標記：開心說話時把嘴巴張開幅度收斂一點（見下方 talk 區塊）
     elif expr == "sad":
         # 使用者選定：沿用原「臭臉」那組(微皺眉 + 平嘴 + 垂眼)，頭朝正前方，作為難過表情。
         params["smile"] = -0.3                      # 嘴角微下垂/平
@@ -202,6 +205,11 @@ def _build_lp_params(action, t, i, n, source_eye_ratio, source_lip_ratio):
         elif action == "talk_angry":
             _apply_expression_overlay(p, "angry")
 
+        # 開心說話：把說話張嘴的幅度收斂到約 65%，避免大張的嘴把「笑意」蓋掉，
+        # 讓效果更接近「帶著微笑講話」而不是「用力張大嘴」。
+        if p.pop("_happy_mouth_damp", False):
+            p["input_lip_ratio"] *= 0.65
+
         # 第 0 幀強制閉嘴：這一幀是「表情總覽」抓來當代表的畫面，
         # 閉嘴才能讓嘴角的笑/垂、眉毛的情緒清楚呈現，不會被說話張大的嘴蓋掉。
         # （後續幀正常做視位循環，動畫播放時嘴巴照樣會動。）
@@ -228,7 +236,6 @@ def _to_pil(rgb_uint8_hw3):
     scale_ratio = OUTPUT_SIZE / max(w, h)
     new_w, new_h = round(w * scale_ratio), round(h * scale_ratio)
     img_resized = img.resize((new_w, new_h))
-    # 透明畫布（RGBA，alpha=0 全透明），照片貼上去的區域才會變不透明
     canvas = Image.new("RGBA", (OUTPUT_SIZE, OUTPUT_SIZE), (0, 0, 0, 0))
     offset_x = (OUTPUT_SIZE - new_w) // 2
     offset_y = (OUTPUT_SIZE - new_h) // 2
@@ -335,13 +342,6 @@ def bake_payload(pipeline, photo_path: str, scale: float = 2.3, log=print) -> di
         raise FileNotFoundError(f"找不到照片：{photo_path}")
 
     log(f"  來源相片：{photo_path}")
-    try:
-        _probe = Image.open(photo_path)
-        _pw, _ph = _probe.size
-        _orient = "直式（高>寬）" if _ph > _pw else ("橫式（寬>高）" if _pw > _ph else "正方形")
-        log(f"  原始照片尺寸：{_pw}×{_ph}（{_orient}）— 已用保持長寬比的方式處理，臉不會被壓扁")
-    except Exception:
-        pass
     src_eye_ratio, src_lip_ratio = pipeline.init_retargeting_image(
         retargeting_source_scale=scale, source_eye_ratio=0.4, source_lip_ratio=0.0,
         input_image=photo_path,
