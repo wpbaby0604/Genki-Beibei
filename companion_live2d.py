@@ -30,6 +30,7 @@ import streamlit as st
 
 from core_data import go_to
 from live2d_component import render_beibei
+from beibei_voice import voice_input, audio_b64_ms, pop_new_utterance
 from api_config import get_api_keys
 
 # 🆕 頭像儲存抽象層（repo 內建保底 + 之後接 Google Drive）
@@ -824,16 +825,22 @@ def show_companion() -> None:
                 with st.chat_message(msg["role"], avatar=_av):
                     st.write(msg["content"])
 
-        col_text, col_mic = st.columns([4, 1])
-        with col_text:
-            user_input = st.chat_input("想對貝貝說什麼？")
-        with col_mic:
-            try:
-                from audio_recorder_streamlit import audio_recorder
-                audio_bytes = audio_recorder(text="", icon_size="2x", icon_name="microphone")
-            except Exception:
-                audio_bytes = None
-                st.caption("🎤×")
+        user_input = st.chat_input("想對貝貝說什麼？")
+
+        # 🎙 語音常開：連續語音、免一直點；貝貝用 TTS 說話時自動靜音、講完自動恢復聆聽
+        _latest_audio = st.session_state.get("latest_audio") or ""
+        _voice_res = voice_input(
+            lang="zh-TW",
+            speak_ms=audio_b64_ms(_latest_audio),            # 這段語音多長 → 靜音多久
+            speak_token=hash(_latest_audio) & 0xFFFFFFFF,    # 音檔內容一變 → 觸發靜音
+            key="beibei_voice",
+        )
+        # 辨識到的一句話，塞進 user_input，讓它走「跟打字一模一樣」的下游流程
+        _spoken = pop_new_utterance(_voice_res, st.session_state)
+        if _spoken and not user_input:
+            user_input = _spoken
+
+        audio_bytes = None   # 已改用瀏覽器語音辨識；保留此變數讓下面 is_new_audio 判斷照常運作
 
         is_new_text = bool(user_input)
         is_new_audio = (audio_bytes is not None) and (audio_bytes != st.session_state.last_processed_audio)
