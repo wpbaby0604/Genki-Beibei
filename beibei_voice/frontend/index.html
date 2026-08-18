@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  .status { font-size: 14px; line-height: 1.5; min-height: 20px;
+            display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; flex: none; }
+  .status.on   .dot { background: #e53935; animation: pulse 1.4s infinite; }
+  .status.speaking .dot { background: #ff9800; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(229,57,53,.5); }
+    70% { box-shadow: 0 0 0 8px rgba(229,57,53,0); }
+    100% { box-shadow: 0 0 0 0 rgba(229,57,53,0); }
+  }
+  .status.unsupported { color: #b26a00; }
+</style>
+</head>
+<body>
+  <div id="status" class="status"><span class="dot"></span><span id="txt">語音未開啟</span></div>
+
+  <script src="./streamlit-component-lib.js"></script>
+  <script>
+  (function () {
+    var lang = "zh-TW";
+    var minChars = 1;
+    var BUFFER_MS = 400;      // 貝貝講完後多等一下再開麥（避免尾音被收到）
+    var SAFETY_MS = 12000;    // 送出後若一直沒收到「AI 說完」訊號，最多等這麼久就自動恢復
+
+    var wantOn = false;       // 該不該聽（由 Python 的 st.toggle 決定，重載也不會丟）
+    var muted = false;        // 是否因為 AI 說話而暫停
+    var running = false;      // 辨識是否正在跑
+    var recog = null;
+    var resumeTimer = null;
+    var lastSpeakToken = null;
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    var statusEl = document.getElementById("status");
+    var txtEl = document.getElementById("txt");
+    function setHeight() { Streamlit.setFrameHeight(document.body.scrollHeight + 4); }
+    function paint(cls, text) { statusEl.className = "status " + cls; txtEl.textContent = text; setHeight(); }
+
+    if (!SR) {
+      paint("unsupported", "此瀏覽器不支援語音，請直接打字（建議 Chrome / Edge）");
+      Streamlit.onRender(function () { setHeight(); });
+      Streamlit.setComponentValue({ supported: false, id: "", text: "" });
+      setHeight();
+      return;
+    }
+
+    function makeRecog() {
+      var r = new SR();
+      r.lang = lang; r.continuous = true; r.interimResults = true;
+      r.onresult = function (e) {
+        if (muted) return;
+        var interim = "";
+        for (var i = e.resultIndex; i < e.results.length; i++) {
+          var res = e.results[i];
+          if (res.isFinal) {
+            var t = (res[0].transcript || "").trim();
+            if (t.length >= minChars) {
+              // 用永不重複的 ID（時間戳＋亂數），就算 iframe 重載也不會被誤判成重複
+              var uid = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 8);
+              Streamlit.setComponentValue({ supported: true, id: uid, text: t });
+              enterMuted(SAFETY_MS);   // 送出後先靜音等 AI，speak_ms 到了會覆蓋
+              return;
+            }
+          } else { interim += res[0].transcript; }
+        }
+        if (!muted && wantOn) paint("on", interim ? ("聆聽中… " + interim) : "聆聽中…");
+      };
+      r.onend = function () {
+        running = false;
+        // 只要還想開著且沒被靜音，就自動接回去（連續模式會週期性自己停）
+        if (wantOn && !muted) { try { r.start(); running = true; } catch (e) {} }
+      };
+      r.onerror = function (ev) {
+        if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+          paint("unsupported", "麥克風權限被拒，請在網址列允許後再試");
+        }
+        // no-speech / aborted 等交給 onend 自動重啟
+      };
+      return r;
+    }
+
+    function startRec() { if (!recog) recog = makeRecog(); if (!running) { try { recog.start(); running = true; } catch (e) {} } }
+    function stopRec()  { if (recog && running) { try { recog.stop(); } catch (e) {} } running = false; }
+
+    function enterMuted(ms) {
+      muted = true; stopRec(); paint("speaking", "貝貝說話中…（暫停聆聽）");
+      if (resumeTimer) clearTimeout(resumeTimer);
+      resumeTimer = setTimeout(function () { muted = false; applyState(); }, Math.max(0, ms));
+    }
+
+    // 核心：每次重繪都依「Python 說要不要聽」重新套用狀態 → iframe 就算被重載也會自動接回
+    function applyState() {
+      if (wantOn && !muted) { startRec(); if (running) paint("on", "聆聽中…"); }
+      else if (!wantOn) { if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; } muted = false; stopRec(); paint("", "語音未開啟"); }
+      else { paint("speaking", "貝貝說話中…（暫停聆聽）"); }
+    }
+
+    Streamlit.onRender(function (args) {
+      args = args || {};
+      if (args.lang && args.lang !== lang) { lang = args.lang; if (recog) recog.lang = lang; }
+      if (typeof args.min_chars === "number") minChars = args.min_chars;
+
+      wantOn = !!args.listening;   // ← 開關來自 Python，重載也不會丟
+
+      // 偵測「新的一段 AI 朗讀」→ 靜音 speak_ms 這麼久
+      if (typeof args.speak_token !== "undefined" && args.speak_token !== lastSpeakToken) {
+        lastSpeakToken = args.speak_token;
+        if (wantOn) { var ms = (typeof args.speak_ms === "number" ? args.speak_ms : 0); enterMuted(ms + BUFFER_MS); }
+      }
+      applyState();
+      setHeight();
+    });
+
+    setHeight();
+  })();
+  </script>
+</body>
+</html>
