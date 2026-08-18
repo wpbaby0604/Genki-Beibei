@@ -827,15 +827,17 @@ def show_companion() -> None:
 
         user_input = st.chat_input("想對貝貝說什麼？")
 
-        # 🎙 語音常開：連續語音、免一直點；貝貝用 TTS 說話時自動靜音、講完自動恢復聆聽
+        # 🎙 語音常開：開關由 Python st.toggle 控制（狀態存 session_state，聊天更新/元件重載都不會丟）
+        _voice_on = st.toggle("🎙 語音常開（連續語音、免一直點）", key="voice_on")
         _latest_audio = st.session_state.get("latest_audio") or ""
         _voice_res = voice_input(
+            listening=_voice_on,                             # ← 開關來自 Python，重載也會自動接回
             lang="zh-TW",
             speak_ms=audio_b64_ms(_latest_audio),            # 這段語音多長 → 靜音多久
             speak_token=hash(_latest_audio) & 0xFFFFFFFF,    # 音檔內容一變 → 觸發靜音
             key="beibei_voice",
         )
-        # 辨識到的一句話，塞進 user_input，讓它走「跟打字一模一樣」的下游流程
+        # 辨識到的一句話，塞進 user_input，讓它走「跟打字一模一樣」的下游流程（用唯一 id 去重）
         _spoken = pop_new_utterance(_voice_res, st.session_state)
         if _spoken and not user_input:
             user_input = _spoken
