@@ -6,7 +6,7 @@
 # ============================================================
 
 # --- Web framework -------------------------------------------
-streamlit==1.61.1            # 升級：修正雲端斷線重連掉訊息的問題（原為 1.41.1）
+streamlit==1.41.1            # Stable LTS-grade build; works with py 3.9-3.13
 
 # --- Vision stack --------------------------------------------
 opencv-python-headless==4.9.0.80   # Headless build avoids libGL on Cloud
