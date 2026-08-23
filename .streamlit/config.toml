@@ -6,21 +6,6 @@
 # 預設是 200 MB！使用者拖一張 RAW 檔進來就會把 1GB 容器打爆。
 # 照片與背景圖 5 MB 綽綽有餘。
 maxUploadSize = 5
-# 關掉 WebSocket 壓縮，減少雲端 proxy 斷線重連造成的訊息遺失
-enableWebsocketCompression = false
 
 [browser]
 gatherUsageStats = false
-
-# ============================================================
-#  佈景主題：固定「亮色」
-#  升級到 Streamlit 1.61 後，預設會跟隨深色模式，導致聊天泡泡/下拉選單/
-#  頂部列等「自訂 CSS 沒蓋到的元件」變黑。這裡把主題釘成亮色 + 白底深字，
-#  沒被 CSS 蓋到的元件也會回到亮色，跟你的白色面板一致。
-# ============================================================
-[theme]
-base = "light"
-primaryColor = "#1B5E20"              # 深森林綠，呼應你的 🌱 主題
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F0F2F6"  # 側邊欄/聊天泡泡/元件底色（亮）
-textColor = "#111111"
