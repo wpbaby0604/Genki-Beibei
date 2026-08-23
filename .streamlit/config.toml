@@ -7,5 +7,16 @@
 # 照片與背景圖 5 MB 綽綽有餘。
 maxUploadSize = 5
 
+# 關閉 WebSocket 壓縮：雲端 proxy 斷線重連後，壓縮的 permessage-deflate
+# 有時使前端更容易收到順序不對的訊息（SessionInfo 彈窗誘因之一）。
+# 關掉可犧牲少量頻寬換取重連穩定度。
+enableWebsocketCompression = false
+
 [browser]
 gatherUsageStats = false
+
+[theme]
+# 釘死亮色：Streamlit 較新版本預設會「跟隨系統深色模式」，
+# 會讓自訂 CSS 沒蓋到的元件（聊天泡泡/下拉/頂部列）在深色系統下變黑。
+# base="light" 強制亮色，與現有 CSS 一致（雙保險）。
+base = "light"
