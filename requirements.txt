@@ -6,7 +6,11 @@
 # ============================================================
 
 # --- Web framework -------------------------------------------
-streamlit==1.41.1            # Stable LTS-grade build; works with py 3.9-3.13
+streamlit==1.50.0            # 由 1.41.1 升級：1.50 的 protobuf 需求為 <7,>=3.20，
+                            # 與 mediapipe 0.10.14 的 protobuf<5 有交集(pip 解出 protobuf 4.25.x)，
+                            # 故「不需升級 mediapipe / 不需改 core_cv.py」即可取得較新的
+                            # tornado(6.5.x)與 websocket/重連處理，緩解雲端 SessionInfo 重連彈窗。
+                            # 注意：streamlit 1.61+ 改要 protobuf>=5.26.1，會與 mediapipe 0.10.14 硬衝突，不可升到 1.61+。
 
 # --- Vision stack --------------------------------------------
 opencv-python-headless==4.9.0.80   # Headless build avoids libGL on Cloud
@@ -25,7 +29,8 @@ supabase==2.15.0
 bcrypt==4.1.3                # 替代 SHA-256 進行密碼雜湊；自帶 salt 與 cost factor
 
 # --- Implicit but worth pinning ------------------------------
-protobuf>=3.20,<5            # mediapipe transitive; without bound pip resolves >=5 and breaks
+protobuf>=3.20,<5            # 【勿放寬 <5】mediapipe 0.10.14 要求 protobuf<5；streamlit 1.50 允許 <7。
+                            # 保留 <5 可強制 pip 落在共同交集 protobuf 4.25.x，避免解到 5.x 而破壞 mediapipe。
 
 # ============================================================
 #  模式二「陪伴貝貝」(Live2D AI) — 整合新增依賴
@@ -34,6 +39,7 @@ protobuf>=3.20,<5            # mediapipe transitive; without bound pip resolves 
 # ============================================================
 google-genai>=0.8.0          # 新版 SDK：from google import genai（非 google-generativeai）
 edge-tts>=7.0.0             # 貝貝語音合成（曉曉/雲希）
-audio-recorder-streamlit==0.0.8   # 聊天室語音輸入按鈕
+# audio-recorder-streamlit 已移除：語音輸入改用自製 beibei_voice 元件，
+# 全 repo .py 已無任何 audio_recorder 參照(grep 確認)，故刪除以縮小依賴面。
 nest_asyncio==1.6.0          # 保險：避免 asyncio.run 撞到既有 event loop
 python-dotenv==1.0.1         # 本地 .env 讀 Gemini 金鑰（雲端走 st.secrets）
