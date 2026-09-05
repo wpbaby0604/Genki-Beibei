@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Live2D AI 陪伴組件</title>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.2/dist/browser/pixi.min.js"></script>
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display/dist/cubism4.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: transparent; }
+        #live2d_canvas { display: block; width: 100vw; height: 100vh; }
+        /* 🎥 展示用攝影機預覽窗（右下角小格子）
+           預設隱藏；由 Python 端傳入 show_camera=true 才顯示，
+           或在網址列加上 ?cam=1 也能開啟（方便 Demo 時臨時打開）。 */
+        #cam_box {
+            position: fixed; right: 12px; bottom: 12px;
+            width: 180px; z-index: 9999;
+            border-radius: 10px; overflow: hidden;
+            background: #1b1b2b;
+            box-shadow: 0 4px 14px rgba(0,0,0,.35);
+            border: 2px solid #3a3a5c;
+            display: none;              /* 預設不顯示 */
+            font-family: system-ui, "Noto Sans TC", sans-serif;
+        }
+        #cam_box.on { display: block; }
+        /* 鏡像，讓使用者看到的是「照鏡子」的方向，比較直覺 */
+        #input_video {
+            display: block; width: 100%; height: auto;
+            transform: scaleX(-1);
+        }
+        /* 狀態列：顯示 EAR 數值與閉眼倒數 */
+        #cam_status {
+            padding: 4px 8px; font-size: 12px; line-height: 1.5;
+            color: #fff; background: #2e7d63; text-align: center;
+            letter-spacing: .3px;
+        }
+        #cam_status.warn  { background: #c8811f; }   /* 閉眼計時中 */
+        #cam_status.alert { background: #c0392b; }   /* 已觸發 */
+        /* 閉眼進度條：3 秒走完 */
+        #cam_bar_wrap { height: 4px; background: #3a3a5c; }
+        #cam_bar { height: 100%; width: 0%; background: #f0a94b; transition: width .1s linear; }
+    </style>
+</head>
+<body>
+    <div id="cam_box">
+        <video id="input_video" autoplay playsinline muted></video>
+        <div id="cam_bar_wrap"><div id="cam_bar"></div></div>
+        <div id="cam_status">攝影機啟動中…</div>
+    </div>
+    <canvas id="live2d_canvas"></canvas>
+    
+    <script src="./streamlit-component-lib.js"></script>
+    <script src="./main.js"></script>
+</body>
+</html>
