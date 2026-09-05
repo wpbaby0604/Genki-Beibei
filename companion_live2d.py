@@ -663,6 +663,17 @@ def show_companion() -> None:
             key="debug_forced_pick",
         )
         st.caption("選一個就一直保持那個表情，方便你比對微調；選「無」即恢復自動待機/說話/跟臉。")
+    # ================= 側邊欄：Demo — 攝影機預覽窗 =================
+    # 展示「閉眼 3 秒關心」時打開，觀眾就能同時看到你的臉、即時 EAR 數值
+    # 與閉眼進度條，清楚看見偵測是怎麼觸發的。平常請保持關閉。
+    with st.sidebar.expander("🎥 Demo：攝影機預覽", expanded=False):
+        show_camera = st.checkbox(
+            "顯示攝影機小視窗（右下角）",
+            value=False,
+            help="示範嗜睡偵測用。會顯示即時畫面、EAR 數值與閉眼倒數進度條。",
+        )
+        st.caption("提示：閉眼超過 3 秒即觸發關心；觸發後約 13 秒內不會重複觸發。")
+
     forced_action, _forced_emotion = _debug_options[_debug_pick]
     # 被強制成說話表情時，用被強制的情緒去挑對應的說話版；否則用正常情緒。
     _render_emotion = _forced_emotion if _forced_emotion else st.session_state.get("beibei_emotion", "neutral")
@@ -755,6 +766,7 @@ def show_companion() -> None:
                 model_y=model_y,
                 emotion=_render_emotion,     # 🆕 目前情緒（除錯強制說話表情時＝被強制的情緒）
                 forced_action=forced_action, # 🔧 除錯：強制顯示某表情/動作（""＝正常）
+                show_camera=show_camera,     # 🎥 Demo：右下角攝影機預覽窗
             )
 
         # ---- 事件處理：點擊 / 打瞌睡 / 主動搭話 ----
