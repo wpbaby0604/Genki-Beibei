@@ -1,4 +1,40 @@
 const videoElement = document.getElementById('input_video');
+
+// ============================================================
+// 🎥 展示用攝影機預覽窗（Demo 用：讓觀眾看到閉眼 3 秒的偵測過程）
+//    開啟方式一：Python 端 render_beibei(..., show_camera=True)
+//    開啟方式二：網址列加 ?cam=1
+//    兩者都沒有時完全隱藏，不影響一般使用者。
+// ============================================================
+const camBox    = document.getElementById('cam_box');
+const camStatus = document.getElementById('cam_status');
+const camBar    = document.getElementById('cam_bar');
+
+function setCameraPreview(on) {
+    if (!camBox) return;
+    camBox.classList.toggle('on', !!on);
+}
+// 網址參數可強制打開，方便臨時 Demo
+try {
+    if (new URLSearchParams(location.search).get('cam') === '1') setCameraPreview(true);
+} catch (e) {}
+
+// 由偵測迴圈每幀呼叫，更新數值 / 進度條 / 顏色
+function updateCamStatus(avgEAR, closedMs, fired) {
+    if (!camBox || !camBox.classList.contains('on')) return;
+    const pct = Math.max(0, Math.min(100, (closedMs / DROWSY_TIME_LIMIT) * 100));
+    camBar.style.width = pct + '%';
+    camStatus.classList.remove('warn', 'alert');
+    if (fired) {
+        camStatus.classList.add('alert');
+        camStatus.textContent = '😴 已觸發關心！';
+    } else if (closedMs > 0) {
+        camStatus.classList.add('warn');
+        camStatus.textContent = `閉眼 ${(closedMs / 1000).toFixed(1)}s / 3.0s`;
+    } else {
+        camStatus.textContent = `👁 EAR ${avgEAR.toFixed(3)}（門檻 ${DROWSY_THRESHOLD}）`;
+    }
+}
 const canvasElement = document.getElementById('live2d_canvas');
 let beibeiModel = null;
 let audioContext = null;
@@ -315,10 +351,13 @@ faceMesh.onResults((results) => {
         }
     }
     // 核心邏輯：如果低於標準，開始計時
+    let _camClosedMs = 0, _camFired = false;   // 🎥 給預覽窗顯示用
     if (avgEAR < DROWSY_THRESHOLD) {
+        if (drowsyStartTime) _camClosedMs = Math.max(0, Date.now() - drowsyStartTime);
         if (!drowsyStartTime) {
             drowsyStartTime = Date.now(); // 剛閉上眼睛，記下時間
         } else if (Date.now() - drowsyStartTime > DROWSY_TIME_LIMIT) {
+            _camFired = true;
             // 🌟 閉眼超過 3 秒！觸發警報！
             console.log("偵測到打瞌睡！發送警告給 Python！");
             
@@ -338,6 +377,7 @@ faceMesh.onResults((results) => {
     } else {
         drowsyStartTime = null; // 眼睛睜開就重置計時器
     }
+    updateCamStatus(avgEAR, _camClosedMs, _camFired);   // 🎥 更新預覽窗
 });
 
 const camera = new Camera(videoElement, {
@@ -395,6 +435,12 @@ if (!window.__beibeiIdleTimer) {
 //    onRender() 內部會自動送出 streamlit:componentReady 給父視窗
 //    這樣 Streamlit 才知道元件已就緒，不會顯示錯誤訊息
 Streamlit.onRender(function(args) {
+
+    // 🎥 Demo 用攝影機預覽窗開關（由 Python 端 show_camera 控制）
+    if (args && args.show_camera !== undefined) {
+        setCameraPreview(args.show_camera);
+    }
+
     // 🌟 只要 Python 傳新資料過來（表示剛聊完天或剛換背景），就重新計算 5 分鐘！
     resetIdleTimer();
     Streamlit.setFrameHeight(600);
